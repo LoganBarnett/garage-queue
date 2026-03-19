@@ -56,12 +56,15 @@ pub struct ServerSectionRaw {
     pub host: Option<String>,
     pub port: Option<u16>,
     pub nats_url: Option<String>,
-    /// Name of the queue used for the Ollama-compatible POST /api/generate endpoint.
-    pub generate_queue: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct QueueConfigRaw {
+    /// HTTP path at which this queue accepts intake requests.  When set, the
+    /// server registers a POST handler at this path that enqueues payloads and
+    /// waits for a worker result.
+    pub route: Option<String>,
+
     #[serde(default)]
     pub extractors: HashMap<String, ExtractorConfigRaw>,
 }
@@ -99,11 +102,12 @@ pub struct Config {
     pub log_format: LogFormat,
     pub bind_address: SocketAddr,
     pub nats_url: String,
-    pub generate_queue: String,
     pub queues: HashMap<String, QueueConfig>,
 }
 
 pub struct QueueConfig {
+    /// HTTP path at which this queue accepts intake requests, if any.
+    pub route: Option<String>,
     pub extractors: Vec<ExtractorConfig>,
 }
 
@@ -154,7 +158,6 @@ impl Config {
             host: None,
             port: None,
             nats_url: None,
-            generate_queue: None,
         });
 
         let host = server.host.unwrap_or_else(|| "127.0.0.1".to_string());
@@ -168,9 +171,6 @@ impl Config {
         let nats_url =
             server.nats_url.unwrap_or_else(|| "nats://127.0.0.1:4222".to_string());
 
-        let generate_queue =
-            server.generate_queue.unwrap_or_else(|| "default".to_string());
-
         let queues = file
             .queues
             .into_iter()
@@ -180,7 +180,7 @@ impl Config {
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
 
-        Ok(Config { log_level, log_format, bind_address, nats_url, generate_queue, queues })
+        Ok(Config { log_level, log_format, bind_address, nats_url, queues })
     }
 }
 
@@ -196,7 +196,7 @@ fn validate_queue_config(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(QueueConfig { extractors })
+    Ok(QueueConfig { route: raw.route, extractors })
 }
 
 fn validate_extractor(

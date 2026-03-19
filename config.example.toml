@@ -8,8 +8,6 @@ log_format = "text"  # text | json
 host = "0.0.0.0"
 port = 9090
 nats_url = "nats://127.0.0.1:4222"
-# Name of the queue that handles POST /api/generate.
-generate_queue = "ollama"
 
 # ── Queue configuration ────────────────────────────────────────────────────────
 #
@@ -18,6 +16,13 @@ generate_queue = "ollama"
 # requirement (tag or scalar) that is attached to the queued item.
 #
 # Workers are only offered items whose requirements they satisfy.
+#
+# The optional "route" field maps an HTTP path to this queue.  A POST to that
+# path enqueues the payload and waits for a worker result.  Multiple queues may
+# declare different routes; paths not matching any queue return 404.
+
+[queues.ollama]
+route = "/api/generate"
 
 [queues.ollama.extractors.model_tag]
 kind = "tag"

@@ -125,8 +125,8 @@ impl TestServer {
         Self { addr, handle }
     }
 
-    /// Start a server with a single no-requirements queue named "test".
-    /// Any worker capabilities will match items on this queue.
+    /// Start a server with a single no-requirements queue named "test" at
+    /// route "/test".  Any worker capabilities will match items on this queue.
     async fn start(nats_url: &str) -> Self {
         Self::start_with(
             nats_url,
@@ -135,10 +135,9 @@ impl TestServer {
                 log_format: LogFormat::Text,
                 bind_address: "127.0.0.1:0".parse().unwrap(),
                 nats_url: nats_url.to_string(),
-                generate_queue: "test".to_string(),
                 queues: HashMap::from([(
                     "test".to_string(),
-                    QueueConfig { extractors: vec![] },
+                    QueueConfig { route: Some("/test".to_string()), extractors: vec![] },
                 )]),
             },
         )
@@ -197,20 +196,35 @@ async fn result_for_unknown_item_returns_404() {
 }
 
 #[tokio::test]
-async fn generate_poll_result_round_trip() {
+async fn unmapped_route_returns_404() {
+    let nats = TestNats::acquire();
+    let server = TestServer::start(&nats.url).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{}/no/such/route", server.addr))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn intake_poll_result_round_trip() {
     let nats = TestNats::acquire();
     let server = TestServer::start(&nats.url).await;
     let base = format!("http://{}", server.addr);
     let client = reqwest::Client::new();
 
-    // POST /api/generate blocks until a worker returns a result, so run it
-    // in a separate task.
-    let generate_handle = {
+    // POST /test blocks until a worker returns a result, so run it in a
+    // separate task.
+    let intake_handle = {
         let client = client.clone();
         let base = base.clone();
         tokio::spawn(async move {
             client
-                .post(format!("{base}/api/generate"))
+                .post(format!("{base}/test"))
                 .json(&json!({ "model": "llama3.2:8b", "prompt": "hello" }))
                 .send()
                 .await
@@ -232,7 +246,7 @@ async fn generate_poll_result_round_trip() {
     assert_eq!(poll_resp.status(), 200, "expected item from poll");
     let item: QueueItem = poll_resp.json().await.unwrap();
 
-    // Return a result; the waiting generate request should now resolve.
+    // Return a result; the waiting intake request should now resolve.
     let worker_response = json!({ "response": "The sky is blue." });
     let result_resp = client
         .post(format!("{base}/api/work/result"))
@@ -243,9 +257,9 @@ async fn generate_poll_result_round_trip() {
 
     assert_eq!(result_resp.status(), 200);
 
-    let gen_resp = generate_handle.await.unwrap();
-    assert_eq!(gen_resp.status(), 200);
-    let body: serde_json::Value = gen_resp.json().await.unwrap();
+    let intake_resp = intake_handle.await.unwrap();
+    assert_eq!(intake_resp.status(), 200);
+    let body: serde_json::Value = intake_resp.json().await.unwrap();
     assert_eq!(body, worker_response);
 }
 
@@ -262,10 +276,10 @@ async fn poll_skips_items_with_unmet_tag_requirement() {
             log_format: LogFormat::Text,
             bind_address: "127.0.0.1:0".parse().unwrap(),
             nats_url: nats.url.clone(),
-            generate_queue: "tagged".to_string(),
             queues: HashMap::from([(
                 "tagged".to_string(),
                 QueueConfig {
+                    route: Some("/tagged".to_string()),
                     extractors: vec![ExtractorConfig {
                         capability: "model".to_string(),
                         kind: ExtractorKind::Tag,
@@ -286,7 +300,7 @@ async fn poll_skips_items_with_unmet_tag_requirement() {
         let base = base.clone();
         tokio::spawn(async move {
             client
-                .post(format!("{base}/api/generate"))
+                .post(format!("{base}/tagged"))
                 .json(&json!({ "model": "llama3.2:8b" }))
                 .send()
                 .await

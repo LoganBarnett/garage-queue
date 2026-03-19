@@ -1,20 +1,16 @@
-mod config;
-mod intake;
-mod logging;
-mod routes;
-mod state;
+use garage_queue_server::{
+    build_router,
+    config::{CliRaw, Config, ConfigError},
+    intake::{CompiledQueue, IntakeError},
+    logging::init_logging,
+    state::AppState,
+};
 
-use axum::{routing::get, routing::post, Router};
 use clap::Parser;
-use config::{CliRaw, Config, ConfigError};
-use intake::{CompiledQueue, IntakeError};
-use logging::init_logging;
-use state::AppState;
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::signal;
-use tower_http::trace::TraceLayer;
 use tracing::info;
 
 #[derive(Debug, Error)]
@@ -74,13 +70,7 @@ async fn main() -> Result<(), ApplicationError> {
     let state = AppState::new(Arc::clone(&config), jetstream, compiled_queues);
     let bind = config.bind_address;
 
-    let app = Router::new()
-        .route("/healthz", get(routes::health::healthz))
-        .route("/api/generate", post(routes::generate::handle_generate))
-        .route("/api/work/poll", post(routes::work::poll))
-        .route("/api/work/result", post(routes::work::result))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+    let app = build_router(state);
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await

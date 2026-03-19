@@ -146,7 +146,7 @@
     # ============================================================================
     overlays.default = final: prev:
       prev.lib.mapAttrs' (key: crate:
-        prev.lib.nameValuePair crate.name self.packages.${final.system}.${key}
+        prev.lib.nameValuePair crate.name self.packages.${final.stdenv.hostPlatform.system}.${key}
       ) workspaceCrates;
 
     # ============================================================================

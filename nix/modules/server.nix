@@ -28,6 +28,19 @@ in
       description = "Group under which the server runs.";
     };
 
+    nats = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Start a local NATS server with JetStream for the queue.  When true,
+          services.nats is configured with JetStream enabled.  All tuning
+          (storage limits, clustering, etc.) is left to the operator via
+          services.nats.
+        '';
+      };
+    };
+
     # The settings attrset is converted to TOML and passed to the server via
     # --config.  Its structure mirrors the server config.toml directly, so any
     # field accepted by the server can be set here.
@@ -66,11 +79,19 @@ in
 
     users.groups.${cfg.group} = lib.mkDefault { };
 
+    # Only JetStream is required; all tuning is left to the operator.
+    services.nats = lib.mkIf cfg.nats.enable {
+      enable = true;
+      jetstream = true;
+    };
+
     systemd.services.garage-queue-server = {
       description = "garage-queue server";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+      after = [ "network-online.target" ]
+        ++ lib.optional cfg.nats.enable "nats.service";
+      wants = [ "network-online.target" ]
+        ++ lib.optional cfg.nats.enable "nats.service";
 
       serviceConfig = {
         Type = "simple";

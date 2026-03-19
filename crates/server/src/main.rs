@@ -1,0 +1,140 @@
+mod config;
+mod intake;
+mod logging;
+mod routes;
+mod state;
+
+use axum::{routing::get, routing::post, Router};
+use clap::Parser;
+use config::{CliRaw, Config, ConfigError};
+use intake::{CompiledQueue, IntakeError};
+use logging::init_logging;
+use state::AppState;
+use std::collections::HashMap;
+use std::sync::Arc;
+use thiserror::Error;
+use tokio::signal;
+use tower_http::trace::TraceLayer;
+use tracing::info;
+
+#[derive(Debug, Error)]
+enum ApplicationError {
+    #[error("Failed to load configuration: {0}")]
+    ConfigurationLoad(#[from] ConfigError),
+
+    #[error("Failed to build queue extractor for queue '{queue}': {source}")]
+    ExtractorBuild { queue: String, source: IntakeError },
+
+    #[error("Failed to connect to NATS at '{url}': {message}")]
+    NatsConnect { url: String, message: String },
+
+    #[error("Failed to create or verify NATS stream: {0}")]
+    NatsStream(String),
+
+    #[error("Failed to bind server to '{address}': {source}")]
+    ServerBind { address: String, source: std::io::Error },
+
+    #[error("Server runtime error: {0}")]
+    ServerRuntime(#[source] std::io::Error),
+}
+
+#[tokio::main]
+async fn main() -> Result<(), ApplicationError> {
+    let cli = CliRaw::parse();
+    let config =
+        Config::from_cli_and_file(cli).map_err(ApplicationError::ConfigurationLoad)?;
+
+    init_logging(config.log_level, config.log_format);
+    info!("Starting garage-queue-server");
+
+    let compiled_queues = build_compiled_queues(&config)?;
+    info!(queues = %compiled_queues.len(), "Queue extractors compiled");
+
+    let nats = async_nats::connect(&config.nats_url)
+        .await
+        .map_err(|e| ApplicationError::NatsConnect {
+            url: config.nats_url.clone(),
+            message: e.to_string(),
+        })?;
+
+    let jetstream = async_nats::jetstream::new(nats);
+
+    jetstream
+        .get_or_create_stream(async_nats::jetstream::stream::Config {
+            name: "GARAGE_QUEUE_ITEMS".to_string(),
+            subjects: vec!["items.>".to_string()],
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| ApplicationError::NatsStream(e.to_string()))?;
+
+    info!("Connected to NATS and stream ready");
+
+    let config = Arc::new(config);
+    let state = AppState::new(Arc::clone(&config), jetstream, compiled_queues);
+    let bind = config.bind_address;
+
+    let app = Router::new()
+        .route("/healthz", get(routes::health::healthz))
+        .route("/api/generate", post(routes::generate::handle_generate))
+        .route("/api/work/poll", post(routes::work::poll))
+        .route("/api/work/result", post(routes::work::result))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(bind)
+        .await
+        .map_err(|source| ApplicationError::ServerBind {
+            address: bind.to_string(),
+            source,
+        })?;
+
+    info!(address = %bind, "Listening");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(ApplicationError::ServerRuntime)?;
+
+    info!("Shutdown complete");
+    Ok(())
+}
+
+fn build_compiled_queues(
+    config: &Config,
+) -> Result<HashMap<String, CompiledQueue>, ApplicationError> {
+    config
+        .queues
+        .iter()
+        .map(|(name, queue_cfg)| {
+            CompiledQueue::build(queue_cfg)
+                .map(|compiled| (name.clone(), compiled))
+                .map_err(|source| ApplicationError::ExtractorBuild {
+                    queue: name.clone(),
+                    source,
+                })
+        })
+        .collect()
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => info!("Received Ctrl+C, shutting down"),
+        _ = terminate => info!("Received SIGTERM, shutting down"),
+    }
+}

@@ -1,0 +1,304 @@
+#+title: garage-queue
+#+language: en
+
+A heterogeneous, capability-aware work queue.  Producers submit payloads; the
+queue matches each item to workers that have the hardware and software
+capabilities to handle it.
+
+* Overview
+
+The system is built around three programs:
+
+- ~garage-queue-server~ — accepts producer requests via HTTP, persists items to
+  NATS JetStream, holds connections open while waiting for results.
+- ~garage-queue-worker~ — polls the server for items its capabilities can
+  satisfy, executes them via a configured delegator, and returns results.
+- ~garage-queue-cli~ — inspection and management tool.
+
+The first delegator type is HTTP forwarding, intended for Ollama inference
+requests.  The program has no knowledge of Ollama, VRAM, or language models;
+those concerns live entirely in configuration.
+
+* Running
+
+** Server
+
+#+begin_src sh :exports code
+garage-queue-server --config /etc/garage-queue/server.toml
+#+end_src
+
+Config file and log level can also be set via environment variables:
+
+#+begin_src sh :exports code
+CONFIG_FILE=/etc/garage-queue/server.toml \
+LOG_LEVEL=debug \
+  garage-queue-server
+#+end_src
+
+** Worker
+
+#+begin_src sh :exports code
+garage-queue-worker --config ~/.config/garage-queue/worker.toml
+#+end_src
+
+** CLI
+
+Check whether the server is reachable:
+
+#+begin_src sh :exports code
+garage-queue-cli health
+#+end_src
+
+Submit a generate request and wait for the result (reads JSON from stdin):
+
+#+begin_src sh :exports code
+echo '{"model":"llama3.2:8b","prompt":"Why is the sky blue?"}' \
+  | garage-queue-cli generate
+#+end_src
+
+Pass the payload inline with ~--payload~:
+
+#+begin_src sh :exports code
+garage-queue-cli generate --payload '{"model":"llama3.2:8b","prompt":"Hello"}'
+#+end_src
+
+Override the server URL for a single invocation:
+
+#+begin_src sh :exports code
+garage-queue-cli --server-url http://192.168.1.10:9090 health
+#+end_src
+
+* Capability matching
+
+Every queue item carries a list of requirements extracted from its payload at
+intake time.  Every worker advertises its capabilities when polling.  The server
+only offers an item to a worker whose capabilities satisfy *all* of the item's
+requirements.
+
+** Tags
+
+A tag requirement is an exact string match.  The worker must list the tag
+among its capabilities.
+
+** Scalars
+
+A scalar requirement is a named numeric threshold.  The worker must advertise a
+value for that name that is greater than or equal to the item's required value.
+This models resource capacity: a worker with ~vram_mb = 16384~ satisfies any
+item requiring ~vram_mb <= 16384~.
+
+* Configuration
+
+** Server (~config.toml~)
+
+#+begin_src toml :exports code
+log_level = "info"
+log_format = "text"
+
+[server]
+host = "0.0.0.0"
+port = 9090
+nats_url = "nats://127.0.0.1:4222"
+# Which queue handles POST /api/generate
+generate_queue = "ollama"
+
+[queues.ollama.extractors.model_tag]
+kind = "tag"
+capability = "model"
+jq_exp = ".model"
+
+[queues.ollama.extractors.vram]
+kind = "scalar"
+capability = "vram_mb"
+# Complex expressions belong in a separate file.
+jq_file = "extractors/vram.jq"
+#+end_src
+
+** Worker (~config.toml~)
+
+#+begin_src toml :exports code
+[worker]
+server_url = "http://192.168.1.10:9090"
+poll_interval_ms = 1000
+
+[control]
+host = "127.0.0.1"
+port = 9091
+
+[capabilities]
+tags = ["llama3.2:8b", "gemma2:9b"]
+
+[capabilities.scalars]
+vram_mb = 16384
+
+[delegator]
+kind = "http"
+url = "http://127.0.0.1:11434/api/generate"
+#+end_src
+
+** jq expressions
+
+Capability extractors use [[https://jqlang.org/][jq]] expressions (evaluated by the
+[[https://github.com/01mf02/jaq][jaq]] Rust library).  Simple fields can be expressed inline:
+
+#+begin_src toml :exports code
+jq_exp = ".model"
+#+end_src
+
+More complex expressions belong in a ~.jq~ file pointed to by ~jq_file~:
+
+#+begin_src jq :exports code
+# extractors/vram.jq
+#
+# Estimate VRAM requirement from the model name.
+# Parses parameter count (e.g. "8b" → 8) and quantisation level
+# (e.g. "q4" → 600 MB/B, default q4 if absent), then adds overhead.
+
+.model as $m |
+({ "q4": 600, "q5": 700, "q8": 1000, "f16": 2000 }) as $mult |
+({"mixtral:8x7b": 26000}) as $overrides |
+
+$overrides[$m] //
+(
+  ($m | capture("(?<n>[0-9]+\\.?[0-9]*)b").n | tonumber) as $params |
+  ($m | (match("(q[0-9]+|f[0-9]+)").captures[0].string) // "q4") as $quant |
+  ($mult[$quant] // 600) as $mbPerB |
+  ($params * $mbPerB + 1500)
+)
+#+end_src
+
+* Worker control
+
+Workers expose a local HTTP control server (default ~127.0.0.1:9091~) for
+integration with process supervisors such as sytter:
+
+| Endpoint                       | Effect                                           |
+|--------------------------------+--------------------------------------------------|
+| ~POST /control/pause~          | Stop accepting new items; finish current item    |
+| ~POST /control/resume~         | Resume accepting items                           |
+| ~POST /control/stop~           | Finish current item, then exit                   |
+| ~POST /control/stop/immediate~ | Exit immediately; current item is abandoned      |
+
+An abandoned item was never acknowledged, so it will be redelivered when the
+server restarts.
+
+* NixOS
+
+Import the server module on the machine running NATS and the queue server,
+and the worker module on each worker machine:
+
+#+begin_src nix :exports code
+# flake.nix (consumer)
+inputs.garage-queue.url = "github:you/garage-queue";
+
+# NixOS configuration
+imports = [ garage-queue.nixosModules.server ];
+
+services.garage-queue-server = {
+  enable = true;
+  settings = {
+    server = {
+      host = "0.0.0.0";
+      port = 9090;
+      nats_url = "nats://localhost:4222";
+      generate_queue = "ollama";
+    };
+    queues.ollama.extractors.model_tag = {
+      kind = "tag";
+      capability = "model";
+      jq_exp = ".model";
+    };
+  };
+};
+#+end_src
+
+#+begin_src nix :exports code
+# Worker NixOS configuration
+imports = [ garage-queue.nixosModules.worker ];
+
+services.garage-queue-worker = {
+  enable = true;
+  settings = {
+    worker = {
+      server_url = "http://192.168.1.10:9090";
+      poll_interval_ms = 1000;
+    };
+    control = { host = "127.0.0.1"; port = 9091; };
+    capabilities = {
+      tags = [ "llama3.2:8b" ];
+      scalars.vram_mb = 8192;
+    };
+    delegator = { kind = "http"; url = "http://localhost:11434"; };
+  };
+};
+#+end_src
+
+* Darwin (nix-darwin)
+
+The worker runs as a user-level launchd agent so it shares the login session
+with Ollama.  The server runs as a system daemon.
+
+#+begin_src nix :exports code
+# darwin configuration
+imports = [ garage-queue.darwinModules.worker ];
+
+services.garage-queue-worker = {
+  enable = true;
+  settings = {
+    worker.server_url = "http://192.168.1.10:9090";
+    capabilities = {
+      tags = [ "llama3.2:8b" "llama3.2:3b" ];
+      scalars.vram_mb = 8192;
+    };
+    delegator = { kind = "http"; url = "http://localhost:11434"; };
+  };
+};
+#+end_src
+
+* Future design notes
+
+** Tag list extraction
+
+Currently each extractor produces a single tag value.  A plausible future
+extension is a ~kind = "tag_list"~ extractor whose jq expression returns a JSON
+array of strings, each becoming a separate tag requirement.
+
+The current decision was to defer this because there is no known use case, and
+because allowing an expression to return either a string or an array
+(polymorphic output) was considered unfriendly to operators writing expressions.
+
+** Streaming responses
+
+The system forces ~"stream": false~ on all delegated requests.  Supporting
+streaming would require the server to proxy chunked output from the worker back
+to the waiting producer connection.  This is architecturally straightforward but
+adds complexity and was deferred pending a concrete need.
+
+** Dead letter queue
+
+Items whose delegator call fails are silently dropped; the producer times out.
+A dead letter queue with configurable retry policy is a natural next step.
+
+** Scalar comparator vocabulary
+
+Scalar matching currently always uses ~>=~ semantics (worker capacity >=
+item requirement).  If a use case arises where a different comparator is
+needed (e.g. ~<=~ for a budget that must not be exceeded), the config should
+gain an explicit ~compare~ field on scalar extractors and a corresponding
+field on worker scalar declarations, rather than hard-coding the direction.
+
+** In-flight tracking and requeue-on-crash
+
+When the server crashes, items held in the in-memory pending queue but not yet
+acked in NATS are replayed on restart.  Items that were mid-flight (dispatched
+to a worker but not yet returned) are also replayed.  There is currently no
+in-process timeout: a crashed worker leaves its item's producer waiting until
+the server restarts.  An in-flight timeout with automatic requeue would improve
+resilience.
+
+** Multi-endpoint routing
+
+Currently the server exposes a single Ollama-compatible ~POST /api/generate~
+endpoint.  Future work could introduce a route table in config mapping arbitrary
+~(method, path)~ pairs to queues, enabling the server to front multiple
+downstream service types simultaneously.

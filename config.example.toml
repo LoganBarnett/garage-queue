@@ -1,0 +1,54 @@
+# Example configuration file for garage-queue-server.
+# Copy to config.toml and customise.
+
+log_level = "info"   # trace | debug | info | warn | error
+log_format = "text"  # text | json
+
+[server]
+host = "0.0.0.0"
+port = 9090
+nats_url = "nats://127.0.0.1:4222"
+# Name of the queue that handles POST /api/generate.
+generate_queue = "ollama"
+
+# ── Queue configuration ────────────────────────────────────────────────────────
+#
+# Each queue has a set of named extractors.  An extractor evaluates a jq
+# expression against the incoming payload and produces a single capability
+# requirement (tag or scalar) that is attached to the queued item.
+#
+# Workers are only offered items whose requirements they satisfy.
+
+[queues.ollama.extractors.model_tag]
+kind = "tag"
+capability = "model"
+# Extract the model name as a tag requirement.  Workers must list this model
+# in their tags to receive the item.
+jq_exp = ".model"
+
+[queues.ollama.extractors.vram]
+kind = "scalar"
+capability = "vram_mb"
+# A more complex expression lives in a separate .jq file.
+# See extractors/vram.jq for an annotated example.
+jq_file = "extractors/vram.jq"
+
+# ── Worker example (use a separate config.toml per worker host) ───────────────
+#
+# [worker]
+# server_url = "http://192.168.1.10:9090"
+# poll_interval_ms = 1000
+#
+# [control]
+# host = "127.0.0.1"
+# port = 9091
+#
+# [capabilities]
+# tags = ["llama3.2:8b", "gemma2:9b"]
+#
+# [capabilities.scalars]
+# vram_mb = 16384
+#
+# [delegator]
+# kind = "http"
+# url = "http://127.0.0.1:11434/api/generate"

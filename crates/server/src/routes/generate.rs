@@ -49,7 +49,12 @@ pub async fn handle_generate(
         requirements,
     };
 
-    info!(item_id = %item.id, queue = %queue_name, "Enqueuing item");
+    info!(
+        item_id = %item.id,
+        queue = %queue_name,
+        requirements = ?item.requirements,
+        "Enqueuing item",
+    );
 
     // Persist to NATS before registering the response channel so that a
     // crash after persistence but before registration results in the item

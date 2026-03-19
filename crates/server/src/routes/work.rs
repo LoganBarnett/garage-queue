@@ -22,7 +22,12 @@ pub async fn poll(
         None => StatusCode::NO_CONTENT.into_response(),
         Some(idx) => {
             let item = pending.remove(idx).expect("position just confirmed");
-            info!(item_id = %item.id, queue = %item.queue, "Dispatching item to worker");
+            info!(
+                item_id = %item.id,
+                queue = %item.queue,
+                worker_tags = ?body.capabilities.tags,
+                "Dispatching item to worker",
+            );
             Json(item).into_response()
         }
     }

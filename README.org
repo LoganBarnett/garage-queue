@@ -99,8 +99,10 @@ log_format = "text"
 host = "0.0.0.0"
 port = 9090
 nats_url = "nats://127.0.0.1:4222"
-# Which queue handles POST /api/generate
-generate_queue = "ollama"
+
+[queues.ollama]
+# HTTP path at which this queue accepts intake requests.
+route = "/api/generate"
 
 [queues.ollama.extractors.model_tag]
 kind = "tag"
@@ -201,12 +203,14 @@ services.garage-queue-server = {
       host = "0.0.0.0";
       port = 9090;
       nats_url = "nats://localhost:4222";
-      generate_queue = "ollama";
     };
-    queues.ollama.extractors.model_tag = {
-      kind = "tag";
-      capability = "model";
-      jq_exp = ".model";
+    queues.ollama = {
+      route = "/api/generate";
+      extractors.model_tag = {
+        kind = "tag";
+        capability = "model";
+        jq_exp = ".model";
+      };
     };
   };
 };
@@ -296,9 +300,3 @@ in-process timeout: a crashed worker leaves its item's producer waiting until
 the server restarts.  An in-flight timeout with automatic requeue would improve
 resilience.
 
-** Multi-endpoint routing
-
-Currently the server exposes a single Ollama-compatible ~POST /api/generate~
-endpoint.  Future work could introduce a route table in config mapping arbitrary
-~(method, path)~ pairs to queues, enabling the server to front multiple
-downstream service types simultaneously.

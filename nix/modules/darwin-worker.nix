@@ -1,5 +1,5 @@
 { self }:
-{ config, lib, pkgs, ... }:
+{ config, lib, pkgs, system, ... }:
 let
   cfg = config.services.garage-queue-worker;
   settingsFormat = pkgs.formats.toml { };
@@ -11,7 +11,7 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.system}.worker;
+      default = self.packages.${system}.worker;
       defaultText = lib.literalExpression "garage-queue.packages.\${system}.worker";
       description = "The garage-queue-worker package to use.";
     };

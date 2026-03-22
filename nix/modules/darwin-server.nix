@@ -3,7 +3,25 @@
 let
   cfg = config.services.garage-queue-server;
   settingsFormat = pkgs.formats.toml { };
-  configFile = settingsFormat.generate "garage-queue-server.toml" cfg.settings;
+  # Derive TOML queue config from the declarative queues option.  Queues
+  # with no integrations enabled produce empty attrsets and are filtered
+  # out so the generated TOML stays clean.
+  queueSettings = lib.filterAttrs (_: v: v != { }) (
+    lib.mapAttrs (_: qCfg:
+      lib.optionalAttrs qCfg.integrations.ollama.enable {
+        route = "/api/generate";
+        extractors.model_tag = {
+          kind = "tag";
+          capability = "model";
+          jq_exp = ".model";
+        };
+      }
+    ) cfg.queues
+  );
+  mergedSettings = lib.recursiveUpdate cfg.settings (
+    lib.optionalAttrs (queueSettings != { }) { queues = queueSettings; }
+  );
+  configFile = settingsFormat.generate "garage-queue-server.toml" mergedSettings;
 in
 {
   options.services.garage-queue-server = {
@@ -34,7 +52,8 @@ in
 
     # The settings attrset is converted to TOML and passed to the server via
     # --config.  Its structure mirrors the server config.toml directly, so any
-    # field accepted by the server can be set here.
+    # field accepted by the server can be set here.  Queue definitions should
+    # use the queues option rather than settings.queues.
     settings = lib.mkOption {
       type = settingsFormat.type;
       default = { };
@@ -49,12 +68,23 @@ in
             listen = "0.0.0.0:9090";
             nats_url = "nats://localhost:4222";
           };
-          queues.ollama.extractors.model = {
-            kind = "tag";
-            capability = "model";
-            jq_exp = ".model";
-          };
         }
+      '';
+    };
+
+    queues = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options.integrations.ollama.enable =
+          lib.mkEnableOption "standard Ollama queue configuration";
+      });
+      default = { };
+      description = ''
+        Named queue definitions.  Each queue can enable integrations that
+        inject well-known configuration fragments.  The resulting queue
+        config is merged on top of settings.
+      '';
+      example = lib.literalExpression ''
+        { ollama.integrations.ollama.enable = true; }
       '';
     };
   };

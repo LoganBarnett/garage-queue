@@ -1,14 +1,47 @@
+# NixOS module for the garage-queue-worker service.
+# Exported from the flake as nixosModules.worker.
+#
+# Each named worker in services.garage-queue-worker.workers becomes a
+# separate systemd service (garage-queue-worker-<name>).  This lets a
+# single host run workers with different capabilities — for example one
+# worker backed by GPU inference and another for CPU-only tasks.
+#
+# Minimal usage:
+#
+#   services.garage-queue-worker.workers.gpu = {
+#     enable = true;
+#     integrations.ollama.enable = true;
+#     settings.worker.server_url = "https://ollama.example.com";
+#   };
+#
+# The Ollama integration requires services.ollama to be configured on
+# the same host; it reads services.ollama.loadModels for capability tags
+# and derives the delegator URL from services.ollama.{host,port}.
 { self }:
 { config, lib, pkgs, system, ... }:
 let
   cfg = config.services.garage-queue-worker;
   settingsFormat = pkgs.formats.toml { };
-  configFile = settingsFormat.generate "garage-queue-worker.toml" cfg.settings;
+
+  # Resolve the final settings for a named worker by merging any
+  # integration-generated fragments on top of the raw settings.
+  resolvedSettings = name: wCfg:
+    let
+      ollamaCfg = config.services.ollama;
+      ollamaSettings = lib.optionalAttrs wCfg.integrations.ollama.enable {
+        capabilities.tags = ollamaCfg.loadModels;
+        delegator = {
+          kind = "http";
+          url = "http://${ollamaCfg.host}:${toString ollamaCfg.port}/api/generate";
+        };
+      };
+    in
+    lib.recursiveUpdate wCfg.settings ollamaSettings;
+
+  enabledWorkers = lib.filterAttrs (_: wCfg: wCfg.enable) cfg.workers;
 in
 {
   options.services.garage-queue-worker = {
-    enable = lib.mkEnableOption "garage-queue worker";
-
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${system}.worker;
@@ -19,48 +52,73 @@ in
     user = lib.mkOption {
       type = lib.types.str;
       default = "garage-queue";
-      description = "User account under which the worker runs.";
+      description = "User account under which all worker instances run.";
     };
 
     group = lib.mkOption {
       type = lib.types.str;
       default = "garage-queue";
-      description = "Group under which the worker runs.";
+      description = "Group under which all worker instances run.";
     };
 
-    # The settings attrset is converted to TOML and passed to the worker via
-    # --config.  Its structure mirrors the worker config.toml directly.
-    settings = lib.mkOption {
-      type = settingsFormat.type;
+    workers = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          enable = lib.mkEnableOption "this garage-queue worker instance";
+
+          # The settings attrset is converted to TOML and passed to the
+          # worker via --config.  Its structure mirrors the worker
+          # config.toml directly.
+          settings = lib.mkOption {
+            type = settingsFormat.type;
+            default = { };
+            description = ''
+              Configuration written verbatim to this worker's TOML config
+              file.  Mirrors the config.toml structure.  The delegator
+              section is required unless integrations.ollama.enable
+              provides it.
+            '';
+            example = lib.literalExpression ''
+              {
+                worker = {
+                  server_url = "http://192.168.1.10:9090";
+                  poll_interval_ms = 1000;
+                };
+                control = {
+                  host = "127.0.0.1";
+                  port = 9091;
+                };
+                capabilities.scalars.vram_mb = 16384;
+              }
+            '';
+          };
+
+          integrations.ollama.enable = lib.mkEnableOption ''
+            Ollama integration for this worker.  When enabled,
+            capabilities.tags is populated from
+            services.ollama.loadModels and the delegator is set to the
+            local Ollama HTTP endpoint
+          '';
+        };
+      });
       default = { };
       description = ''
-        Configuration written verbatim to the worker's TOML config file.
-        Mirrors the config.toml structure.  The delegator section is required.
+        Named worker instances.  Each entry produces a separate systemd
+        service named garage-queue-worker-<name>.
       '';
       example = lib.literalExpression ''
         {
-          worker = {
-            server_url = "http://192.168.1.10:9090";
-            poll_interval_ms = 1000;
-          };
-          control = {
-            host = "127.0.0.1";
-            port = 9091;
-          };
-          capabilities = {
-            tags = [ "llama3.2:8b" "llama3.2:3b" ];
-            scalars.vram_mb = 8192;
-          };
-          delegator = {
-            kind = "http";
-            url = "http://localhost:11434";
+          gpu = {
+            enable = true;
+            integrations.ollama.enable = true;
+            settings.worker.server_url = "https://ollama.example.com";
           };
         }
       '';
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  config = lib.mkIf (enabledWorkers != { }) {
     users.users.${cfg.user} = lib.mkDefault {
       isSystemUser = true;
       group = cfg.group;
@@ -69,24 +127,32 @@ in
 
     users.groups.${cfg.group} = lib.mkDefault { };
 
-    systemd.services.garage-queue-worker = {
-      description = "garage-queue worker";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      wants = [ "network-online.target" ];
+    systemd.services = lib.mapAttrs' (name: wCfg:
+      lib.nameValuePair "garage-queue-worker-${name}" {
+        description = "garage-queue worker (${name})";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network-online.target" ];
+        wants = [ "network-online.target" ];
 
-      serviceConfig = {
-        Type = "simple";
-        User = cfg.user;
-        Group = cfg.group;
-        ExecStart = "${cfg.package}/bin/garage-queue-worker --config ${configFile}";
-        Restart = "on-failure";
-        RestartSec = "5s";
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-      };
-    };
+        serviceConfig = {
+          Type = "simple";
+          User = cfg.user;
+          Group = cfg.group;
+          ExecStart =
+            let
+              configFile = settingsFormat.generate
+                "garage-queue-worker-${name}.toml"
+                (resolvedSettings name wCfg);
+            in
+            "${cfg.package}/bin/garage-queue-worker --config ${configFile}";
+          Restart = "on-failure";
+          RestartSec = "5s";
+          NoNewPrivileges = true;
+          ProtectSystem = "strict";
+          ProtectHome = true;
+          PrivateTmp = true;
+        };
+      }
+    ) enabledWorkers;
   };
 }

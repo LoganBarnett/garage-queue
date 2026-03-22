@@ -1,3 +1,5 @@
+mod systemd;
+
 use garage_queue_server::{
     build_router,
     config::{CliRaw, Config, ConfigError},
@@ -27,8 +29,8 @@ enum ApplicationError {
     #[error("Failed to create or verify NATS stream: {0}")]
     NatsStream(String),
 
-    #[error("Failed to bind server to '{address}': {source}")]
-    ServerBind { address: String, source: std::io::Error },
+    #[error("Failed to bind listener to '{address}': {source}")]
+    ListenerBind { address: String, source: std::io::Error },
 
     #[error("Server runtime error: {0}")]
     ServerRuntime(#[source] std::io::Error),
@@ -68,20 +70,28 @@ async fn main() -> Result<(), ApplicationError> {
 
     let config = Arc::new(config);
     let state = AppState::new(Arc::clone(&config), jetstream, compiled_queues);
-    let bind = config.bind_address;
 
     let app = build_router(state);
 
-    let listener = tokio::net::TcpListener::bind(bind)
-        .await
-        .map_err(|source| ApplicationError::ServerBind {
-            address: bind.to_string(),
+    let listener = tokio_listener::Listener::bind(
+        &config.listen_address,
+        &tokio_listener::SystemOptions::default(),
+        &tokio_listener::UserOptions::default(),
+    )
+    .await
+    .map_err(|source| {
+        ApplicationError::ListenerBind {
+            address: config.listen_address.to_string(),
             source,
-        })?;
+        }
+    })?;
 
-    info!(address = %bind, "Listening");
+    info!(address = %config.listen_address, "Listening");
 
-    axum::serve(listener, app)
+    systemd::notify_ready();
+    systemd::spawn_watchdog();
+
+    tokio_listener::axum07::serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await
         .map_err(ApplicationError::ServerRuntime)?;

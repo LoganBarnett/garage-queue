@@ -5,8 +5,10 @@ log_level = "info"   # trace | debug | info | warn | error
 log_format = "text"  # text | json
 
 [server]
-host = "0.0.0.0"
-port = 9090
+# listen = "0.0.0.0:9090"          # TCP: host:port
+# listen = "/run/garage-queue/garage-queue-server.sock"  # Unix domain socket
+# listen = "sd-listen"              # Inherit socket from systemd (socket activation)
+listen = "0.0.0.0:9090"
 nats_url = "nats://127.0.0.1:4222"
 
 # ── Queue configuration ────────────────────────────────────────────────────────

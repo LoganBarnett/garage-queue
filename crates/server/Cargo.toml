@@ -26,6 +26,8 @@ thiserror = { workspace = true }
 tap = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
+tokio-listener = { workspace = true }
+sd-notify = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 async-nats = { workspace = true }

@@ -2,9 +2,9 @@ use garage_queue_lib::{LogFormat, LogLevel};
 use clap::Parser;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use thiserror::Error;
+use tokio_listener::ListenerAddress;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -14,8 +14,8 @@ pub enum ConfigError {
     #[error("Failed to parse configuration file at '{path}': {source}")]
     Parse { path: PathBuf, source: toml::de::Error },
 
-    #[error("Failed to parse bind address '{address}': {source}")]
-    AddressParse { address: String, source: std::net::AddrParseError },
+    #[error("Invalid listen address '{address}': {reason}")]
+    InvalidListenAddress { address: String, reason: &'static str },
 
     #[error("Extractor '{extractor}' in queue '{queue}': {message}")]
     ExtractorInvalid { queue: String, extractor: String, message: String },
@@ -53,8 +53,7 @@ pub struct ConfigFileRaw {
 
 #[derive(Debug, Deserialize)]
 pub struct ServerSectionRaw {
-    pub host: Option<String>,
-    pub port: Option<u16>,
+    pub listen: Option<String>,
     pub nats_url: Option<String>,
 }
 
@@ -100,7 +99,7 @@ impl ConfigFileRaw {
 pub struct Config {
     pub log_level: LogLevel,
     pub log_format: LogFormat,
-    pub bind_address: SocketAddr,
+    pub listen_address: ListenerAddress,
     pub nats_url: String,
     pub queues: HashMap<String, QueueConfig>,
 }
@@ -155,17 +154,18 @@ impl Config {
             .map_err(|e| ConfigError::Validation(e.to_string()))?;
 
         let server = file.server.unwrap_or_else(|| ServerSectionRaw {
-            host: None,
-            port: None,
+            listen: None,
             nats_url: None,
         });
 
-        let host = server.host.unwrap_or_else(|| "127.0.0.1".to_string());
-        let port = server.port.unwrap_or(9090);
-        let bind_address =
-            format!("{host}:{port}").parse().map_err(|source| ConfigError::AddressParse {
-                address: format!("{host}:{port}"),
-                source,
+        let listen_str =
+            server.listen.unwrap_or_else(|| "127.0.0.1:9090".to_string());
+        let listen_address =
+            listen_str.parse::<ListenerAddress>().map_err(|reason| {
+                ConfigError::InvalidListenAddress {
+                    address: listen_str.clone(),
+                    reason,
+                }
             })?;
 
         let nats_url =
@@ -180,7 +180,7 @@ impl Config {
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
 
-        Ok(Config { log_level, log_format, bind_address, nats_url, queues })
+        Ok(Config { log_level, log_format, listen_address, nats_url, queues })
     }
 }
 

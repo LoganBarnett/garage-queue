@@ -46,10 +46,8 @@ in
       example = lib.literalExpression ''
         {
           server = {
-            host = "0.0.0.0";
-            port = 9090;
+            listen = "0.0.0.0:9090";
             nats_url = "nats://localhost:4222";
-            generate_queue = "ollama";
           };
           queues.ollama.extractors.model = {
             kind = "tag";

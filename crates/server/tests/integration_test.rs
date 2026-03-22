@@ -27,6 +27,7 @@ use std::{
     sync::{Arc, Mutex, Once},
     time::Duration,
 };
+use tokio_listener::ListenerAddress;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -133,7 +134,7 @@ impl TestServer {
             Config {
                 log_level: LogLevel::Warn,
                 log_format: LogFormat::Text,
-                bind_address: "127.0.0.1:0".parse().unwrap(),
+                listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
                 nats_url: nats_url.to_string(),
                 queues: HashMap::from([(
                     "test".to_string(),
@@ -274,7 +275,7 @@ async fn poll_skips_items_with_unmet_tag_requirement() {
         Config {
             log_level: LogLevel::Warn,
             log_format: LogFormat::Text,
-            bind_address: "127.0.0.1:0".parse().unwrap(),
+            listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
             nats_url: nats.url.clone(),
             queues: HashMap::from([(
                 "tagged".to_string(),

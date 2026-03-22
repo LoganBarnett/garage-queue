@@ -36,9 +36,13 @@ toml = "0.8"
 # Error handling
 thiserror = "2.0"
 
+# Systemd integration
+sd-notify = "0.4"
+
 # Web framework
 axum = "0.7"
 tokio = { version = "1.41", features = ["full"] }
+tokio-listener = { version = "0.5", features = ["axum07"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 

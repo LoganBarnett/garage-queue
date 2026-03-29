@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "garage_queue_worker"
+path = "src/lib.rs"
+
 [[bin]]
 name = "garage-queue-worker"
 path = "src/main.rs"

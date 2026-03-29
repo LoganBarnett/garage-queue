@@ -69,10 +69,16 @@ pub struct ConfigFileRaw {
 
 impl ConfigFileRaw {
   pub fn from_file(path: &PathBuf) -> Result<Self, ConfigError> {
-    let contents = std::fs::read_to_string(path)
-      .map_err(|source| ConfigError::FileRead { path: path.clone(), source })?;
-    toml::from_str(&contents)
-      .map_err(|source| ConfigError::Parse { path: path.clone(), source })
+    let contents = std::fs::read_to_string(path).map_err(|source| {
+      ConfigError::FileRead {
+        path: path.clone(),
+        source,
+      }
+    })?;
+    toml::from_str(&contents).map_err(|source| ConfigError::Parse {
+      path: path.clone(),
+      source,
+    })
   }
 }
 
@@ -117,6 +123,11 @@ impl Config {
       .or(config_file.server_url)
       .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
 
-    Ok(Config { log_level, log_format, server_url, command: cli.command })
+    Ok(Config {
+      log_level,
+      log_format,
+      server_url,
+      command: cli.command,
+    })
   }
 }

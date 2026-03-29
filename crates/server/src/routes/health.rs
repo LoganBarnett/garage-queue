@@ -3,9 +3,9 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct HealthResponse {
-    status: &'static str,
+  status: &'static str,
 }
 
 pub async fn healthz() -> impl IntoResponse {
-    (StatusCode::OK, Json(HealthResponse { status: "ok" }))
+  (StatusCode::OK, Json(HealthResponse { status: "ok" }))
 }

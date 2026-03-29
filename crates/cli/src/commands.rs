@@ -19,21 +19,28 @@ pub enum CommandError {
 /// GET /healthz — print the server health response and exit.
 pub async fn health(server_url: &str) -> Result<(), CommandError> {
   let url = format!("{server_url}/healthz");
-  let response = reqwest::get(&url)
-    .await
-    .map_err(|e| CommandError::Request { url: url.clone(), message: e.to_string() })?;
+  let response =
+    reqwest::get(&url)
+      .await
+      .map_err(|e| CommandError::Request {
+        url: url.clone(),
+        message: e.to_string(),
+      })?;
 
   let status = response.status();
-  let body = response
-    .text()
-    .await
-    .map_err(|e| CommandError::Request { url: url.clone(), message: e.to_string() })?;
+  let body = response.text().await.map_err(|e| CommandError::Request {
+    url: url.clone(),
+    message: e.to_string(),
+  })?;
 
   if status.is_success() {
     println!("{body}");
     Ok(())
   } else {
-    Err(CommandError::ServerError { status: status.as_u16(), body })
+    Err(CommandError::ServerError {
+      status: status.as_u16(),
+      body,
+    })
   }
 }
 
@@ -61,23 +68,27 @@ pub async fn generate(
 
   let url = format!("{server_url}/api/generate");
   let client = reqwest::Client::new();
-  let response = client
-    .post(&url)
-    .json(&payload)
-    .send()
-    .await
-    .map_err(|e| CommandError::Request { url: url.clone(), message: e.to_string() })?;
+  let response =
+    client.post(&url).json(&payload).send().await.map_err(|e| {
+      CommandError::Request {
+        url: url.clone(),
+        message: e.to_string(),
+      }
+    })?;
 
   let status = response.status();
-  let body = response
-    .text()
-    .await
-    .map_err(|e| CommandError::Request { url: url.clone(), message: e.to_string() })?;
+  let body = response.text().await.map_err(|e| CommandError::Request {
+    url: url.clone(),
+    message: e.to_string(),
+  })?;
 
   if status.is_success() {
     println!("{body}");
     Ok(())
   } else {
-    Err(CommandError::ServerError { status: status.as_u16(), body })
+    Err(CommandError::ServerError {
+      status: status.as_u16(),
+      body,
+    })
   }
 }

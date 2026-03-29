@@ -32,7 +32,10 @@ fn test_help_flag() {
     output.status.code()
   );
   let stdout = String::from_utf8_lossy(&output.stdout);
-  assert!(stdout.contains("Usage:"), "Expected help text to contain 'Usage:': {stdout}");
+  assert!(
+    stdout.contains("Usage:"),
+    "Expected help text to contain 'Usage:': {stdout}"
+  );
 }
 
 #[test]

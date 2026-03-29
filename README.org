@@ -19,6 +19,17 @@ The first delegator type is HTTP forwarding, intended for Ollama inference
 requests.  The program has no knowledge of Ollama, VRAM, or language models;
 those concerns live entirely in configuration.
 
+* Architecture
+
+#+begin_src d2 :exports results
+Producer -> Server: "POST /route (HTTP)"
+Server -> "NATS JetStream": "persist item"
+Server <- Worker: "POST /api/work/poll"
+Worker -> Delegator: "HTTP forward"
+Worker -> Server: "POST /api/work/result"
+"Control Server" -> Worker: "pause / resume / stop"
+#+end_src
+
 * Running
 
 ** Server

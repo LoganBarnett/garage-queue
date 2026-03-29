@@ -1,0 +1,27 @@
+# Example server configuration for garage-queue.
+#
+# Start the server with:
+#   garage-queue-server --config examples/server.toml
+
+log_level = "info"   # trace | debug | info | warn | error
+log_format = "text"  # text | json
+
+[server]
+listen = "0.0.0.0:9090"
+nats_url = "nats://127.0.0.1:4222"
+
+# A queue for Ollama inference requests.  Incoming POST /api/generate payloads
+# are matched to workers by model tag and estimated VRAM requirement.
+
+[queues.ollama]
+route = "/api/generate"
+
+[queues.ollama.extractors.model_tag]
+kind = "tag"
+capability = "model"
+jq_exp = ".model"
+
+[queues.ollama.extractors.vram]
+kind = "scalar"
+capability = "vram_mb"
+jq_file = "examples/vram.jq"

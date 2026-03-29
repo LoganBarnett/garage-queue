@@ -1,0 +1,25 @@
+# Example worker configuration for garage-queue.
+#
+# Start the worker with:
+#   garage-queue-worker --config examples/worker.toml
+
+log_level = "info"
+log_format = "text"
+
+[worker]
+server_url = "http://192.168.1.10:9090"
+poll_interval_ms = 1000
+
+[control]
+host = "127.0.0.1"
+port = 9091
+
+[capabilities]
+tags = ["llama3.2:8b", "gemma2:9b"]
+
+[capabilities.scalars]
+vram_mb = 16384
+
+[delegator]
+kind = "http"
+url = "http://127.0.0.1:11434/api/generate"

@@ -1,5 +1,5 @@
 #+TITLE: Error Handling Guidelines
-#+AUTHOR: DNS Smart Block Project
+#+AUTHOR: garage-queue
 #+OPTIONS: toc:2
 
 * Philosophy
@@ -429,12 +429,7 @@ Before committing code with error handling, verify:
 
 * Examples in the Codebase
 
-See these files for examples of good error handling:
-
-- ~blocklist-server/src/main.rs~ -- Template loading, database
-  password file reading.
-- ~blocklist-server/tests/error_messages.rs~ -- Tests for error
-  message format.
+See the crate source files for examples of good error handling.
 
 * Additional Resources
 

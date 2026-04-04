@@ -121,7 +121,7 @@ impl Config {
     let server_url = cli
       .server_url
       .or(config_file.server_url)
-      .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
+      .unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
 
     Ok(Config {
       log_level,

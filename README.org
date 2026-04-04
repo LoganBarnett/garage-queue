@@ -107,8 +107,8 @@ log_level = "info"
 log_format = "text"
 
 [server]
-host = "0.0.0.0"
-port = 9090
+# Use a Unix socket, or "0.0.0.0:9090" for TCP.
+listen = "unix:/run/garage-queue/server.sock"
 nats_url = "nats://127.0.0.1:4222"
 
 [queues.ollama]
@@ -209,12 +209,12 @@ imports = [ garage-queue.nixosModules.server ];
 
 services.garage-queue-server = {
   enable = true;
+  # Defaults to a Unix domain socket at
+  # /run/garage-queue-server/garage-queue-server.sock via systemd
+  # socket activation.  Set socket = null; host = "0.0.0.0"; port = 9090;
+  # to use TCP instead.
   settings = {
-    server = {
-      host = "0.0.0.0";
-      port = 9090;
-      nats_url = "nats://localhost:4222";
-    };
+    server.nats_url = "nats://localhost:4222";
     queues.ollama = {
       route = "/api/generate";
       extractors.model_tag = {

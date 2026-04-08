@@ -28,6 +28,8 @@ let
   resolvedSettings = name: wCfg:
     let
       ollamaCfg = config.services.ollama;
+      # Every worker needs an id for SSE-based dispatch.
+      baseSettings = { worker.id = name; };
       ollamaSettings = lib.optionalAttrs wCfg.integrations.ollama.enable {
         capabilities.tags = ollamaCfg.loadModels;
         delegator = {
@@ -36,7 +38,7 @@ let
         };
       };
     in
-    lib.recursiveUpdate wCfg.settings ollamaSettings;
+    lib.recursiveUpdate (lib.recursiveUpdate baseSettings wCfg.settings) ollamaSettings;
 
   enabledWorkers = lib.filterAttrs (_: wCfg: wCfg.enable) cfg.workers;
 in
@@ -82,7 +84,7 @@ in
               {
                 worker = {
                   server_url = "http://192.168.1.10:9090";
-                  poll_interval_ms = 1000;
+                  reconnect_interval_ms = 1000;
                 };
                 control = {
                   host = "127.0.0.1";

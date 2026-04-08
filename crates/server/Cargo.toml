@@ -27,6 +27,8 @@ tap = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tokio-listener = { workspace = true }
+tokio-stream = { workspace = true }
+futures-util = { workspace = true }
 sd-notify = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
@@ -35,4 +37,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+futures-util = { workspace = true }
 tempfile = "3"

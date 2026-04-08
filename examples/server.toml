@@ -12,9 +12,11 @@ nats_url = "nats://127.0.0.1:4222"
 
 # A queue for Ollama inference requests.  Incoming POST /api/generate payloads
 # are matched to workers by model tag and estimated VRAM requirement.
+# Mode defaults to "exclusive" (one worker handles each request).
 
 [queues.ollama]
 route = "/api/generate"
+mode = "exclusive"
 
 [queues.ollama.extractors.model_tag]
 kind = "tag"
@@ -25,3 +27,11 @@ jq_exp = ".model"
 kind = "scalar"
 capability = "vram_mb"
 jq_file = "examples/vram.jq"
+
+# A broadcast queue for scatter-gather across all workers.  Every connected
+# worker receives the request; responses are combined with a jq expression.
+
+[queues.tags]
+route = "/api/tags"
+mode = "broadcast"
+combiner_jq_exp = "{ models: [.[] | .response.models] | add | unique_by(.name) }"

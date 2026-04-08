@@ -1,3 +1,5 @@
+use crate::config::QueueMode;
+use crate::dispatch::{dispatch_broadcast, dispatch_exclusive};
 use crate::state::AppState;
 use axum::{
   extract::{OriginalUri, State},
@@ -38,7 +40,7 @@ pub async fn handle_intake(
 ) -> impl IntoResponse {
   let path = uri.path().to_string();
 
-  let (queue_name, requirements) = {
+  let (queue_name, requirements, mode) = {
     let live = state.live.read().await;
 
     let queue_name = live
@@ -83,7 +85,9 @@ pub async fn handle_intake(
       }
     };
 
-    (queue_name, requirements)
+    let mode = compiled.mode;
+
+    (queue_name, requirements, mode)
   };
 
   let item = QueueItem {
@@ -97,6 +101,7 @@ pub async fn handle_intake(
       item_id = %item.id,
       queue = %queue_name,
       requirements = ?requirements,
+      mode = ?mode,
       "Enqueuing item",
   );
 
@@ -111,17 +116,19 @@ pub async fn handle_intake(
 
   let (tx, rx) = oneshot::channel::<serde_json::Value>();
 
-  {
-    let mut pending = state.pending.lock().await;
-    let mut responses = state.pending_responses.lock().await;
-    pending.push_back(item.clone());
-    responses.insert(item.id, tx);
+  match mode {
+    QueueMode::Exclusive => {
+      dispatch_exclusive(&state, item, tx).await;
+    }
+    QueueMode::Broadcast => {
+      dispatch_broadcast(&state, item, tx).await;
+    }
   }
 
   match rx.await {
     Ok(response) => Json(response).into_response(),
     Err(_) => {
-      error!(item_id = %item.id, "Response channel closed before result arrived");
+      error!("Response channel closed before result arrived");
       StatusCode::SERVICE_UNAVAILABLE.into_response()
     }
   }

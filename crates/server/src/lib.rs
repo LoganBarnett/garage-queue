@@ -1,6 +1,8 @@
 pub mod config;
+pub mod dispatch;
 pub mod intake;
 pub mod logging;
+pub mod registry;
 pub mod routes;
 pub mod state;
 
@@ -13,6 +15,7 @@ use tower_http::trace::TraceLayer;
 pub fn build_router(state: AppState) -> Router {
   Router::new()
     .route("/healthz", get(routes::health::healthz))
+    .route("/api/work/connect", post(routes::sse::connect))
     .route("/api/work/poll", post(routes::work::poll))
     .route("/api/work/result", post(routes::work::result))
     // Catch-all for queue intake: each queue declares its own route in

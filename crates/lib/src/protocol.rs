@@ -18,6 +18,13 @@ pub struct QueueItem {
   pub requirements: Vec<CapabilityRequirement>,
 }
 
+/// Body sent by a worker when establishing an SSE connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerConnect {
+  pub worker_id: String,
+  pub capabilities: WorkerCapabilities,
+}
+
 /// Body of a worker's request for a new work item.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkPoll {
@@ -29,6 +36,9 @@ pub struct WorkPoll {
 pub struct WorkResult {
   /// ID of the item being completed.
   pub item_id: Uuid,
+
+  /// Identifies which worker produced this result.
+  pub worker_id: String,
 
   /// The response from the delegator, returned verbatim to the producer.
   pub response: serde_json::Value,

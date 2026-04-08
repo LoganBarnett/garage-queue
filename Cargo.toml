@@ -46,8 +46,8 @@ tokio-listener = { version = "0.5", features = ["axum07"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 
-# HTTP client (worker delegator)
-reqwest = { version = "0.12", features = ["json"] }
+# HTTP client (worker delegator, SSE stream support)
+reqwest = { version = "0.12", features = ["json", "stream"] }
 
 # NATS messaging
 async-nats = "0.37"
@@ -59,6 +59,11 @@ jaq-json = { version = "1", features = ["serde_json"] }
 
 # Unique item identifiers
 uuid = { version = "1", features = ["v4", "serde"] }
+
+# SSE and stream utilities
+tokio-stream = "0.1"
+futures-util = "0.3"
+eventsource-stream = "0.2"
 
 # Shared library
 garage-queue-lib = { path = "crates/lib" }

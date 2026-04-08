@@ -35,21 +35,26 @@ let
   listenValue =
     if cfg.socket != null then "sd-listen"
     else "${cfg.host}:${toString cfg.port}";
-  # Derive TOML queue config from the declarative queues option.  Queues
-  # with no integrations enabled produce empty attrsets and are filtered
-  # out so the generated TOML stays clean.
-  queueSettings = lib.filterAttrs (_: v: v != { }) (
-    lib.mapAttrs (_: qCfg:
-      lib.optionalAttrs qCfg.integrations.ollama.enable {
+  # Derive TOML queue config from the declarative queues option.  A single
+  # integration can expand into multiple TOML queues (e.g. ollama produces
+  # both {name}-generate and {name}-tags).
+  queueSettings = lib.foldlAttrs (acc: name: qCfg:
+    acc // lib.optionalAttrs qCfg.integrations.ollama.enable {
+      "${name}-generate" = {
         route = "/api/generate";
         extractors.model_tag = {
           kind = "tag";
           capability = "model";
           jq_exp = ".model";
         };
-      }
-    ) cfg.queues
-  );
+      };
+      "${name}-tags" = {
+        route = "/api/tags";
+        mode = "broadcast";
+        combiner_jq_exp = "{ models: [.[] | .response.models] | add | unique_by(.name) }";
+      };
+    }
+  ) { } cfg.queues;
   mergedSettings = lib.recursiveUpdate cfg.settings (
     { server.listen = listenValue; }
     // lib.optionalAttrs (queueSettings != { }) { queues = queueSettings; }
@@ -146,6 +151,10 @@ in
         Named queue definitions.  Each queue can enable integrations that
         inject well-known configuration fragments.  The resulting queue
         config is merged on top of settings.
+
+        The Ollama integration produces two queues from each entry:
+        {name}-generate (exclusive, /api/generate) and {name}-tags
+        (broadcast, /api/tags with a deduplicating combiner).
       '';
       example = lib.literalExpression ''
         { ollama.integrations.ollama.enable = true; }

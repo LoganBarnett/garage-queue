@@ -60,9 +60,13 @@ pub struct ConfigFileRaw {
 #[derive(Debug, Deserialize)]
 pub struct WorkerSectionRaw {
   pub server_url: Option<String>,
-  /// How long to wait between polls when no work is available, in
+
+  /// Unique identifier for this worker.  Required for SSE dispatch.
+  pub id: Option<String>,
+
+  /// How long to wait before reconnecting after a disconnection, in
   /// milliseconds.
-  pub poll_interval_ms: Option<u64>,
+  pub reconnect_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +103,8 @@ pub struct Config {
   pub log_level: LogLevel,
   pub log_format: LogFormat,
   pub server_url: String,
-  pub poll_interval_ms: u64,
+  pub worker_id: String,
+  pub reconnect_interval_ms: u64,
   pub control_bind: SocketAddr,
   pub capabilities: WorkerCapabilities,
   pub delegator: DelegatorConfig,
@@ -138,13 +143,19 @@ impl Config {
 
     let worker = file.worker.unwrap_or_else(|| WorkerSectionRaw {
       server_url: None,
-      poll_interval_ms: None,
+      id: None,
+      reconnect_interval_ms: None,
     });
 
     let server_url = worker
       .server_url
       .unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
-    let poll_interval_ms = worker.poll_interval_ms.unwrap_or(1000);
+
+    let worker_id = worker.id.ok_or_else(|| {
+      ConfigError::Validation("worker.id is required".to_string())
+    })?;
+
+    let reconnect_interval_ms = worker.reconnect_interval_ms.unwrap_or(1000);
 
     let control = file.control.unwrap_or(ControlSectionRaw {
       host: None,
@@ -174,7 +185,8 @@ impl Config {
       log_level,
       log_format,
       server_url,
-      poll_interval_ms,
+      worker_id,
+      reconnect_interval_ms,
       control_bind,
       capabilities,
       delegator,

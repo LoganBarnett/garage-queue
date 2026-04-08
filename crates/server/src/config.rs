@@ -33,6 +33,15 @@ pub enum ConfigError {
     message: String,
   },
 
+  #[error(
+    "Broadcast queue '{queue}' requires exactly one of combiner_jq_exp \
+     or combiner_jq_file"
+  )]
+  BroadcastMissingCombiner { queue: String },
+
+  #[error("Exclusive queue '{queue}' must not have a combiner")]
+  ExclusiveCombinerForbidden { queue: String },
+
   #[error("Configuration validation failed: {0}")]
   Validation(String),
 }
@@ -70,12 +79,30 @@ pub struct ServerSectionRaw {
   pub nats_url: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum QueueModeRaw {
+  #[default]
+  Exclusive,
+  Broadcast,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct QueueConfigRaw {
   /// HTTP path at which this queue accepts intake requests.  When set, the
   /// server registers a POST handler at this path that enqueues payloads and
   /// waits for a worker result.
   pub route: Option<String>,
+
+  /// Dispatch mode: exclusive (one worker) or broadcast (all matching workers).
+  #[serde(default)]
+  pub mode: QueueModeRaw,
+
+  /// Inline jq expression to combine broadcast responses into a single result.
+  pub combiner_jq_exp: Option<String>,
+
+  /// Path to a jq file to combine broadcast responses into a single result.
+  pub combiner_jq_file: Option<PathBuf>,
 
   #[serde(default)]
   pub extractors: HashMap<String, ExtractorConfigRaw>,
@@ -123,10 +150,18 @@ pub struct Config {
   pub queues: HashMap<String, QueueConfig>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueMode {
+  Exclusive,
+  Broadcast,
+}
+
 #[derive(Debug)]
 pub struct QueueConfig {
   /// HTTP path at which this queue accepts intake requests, if any.
   pub route: Option<String>,
+  pub mode: QueueMode,
+  pub combiner: Option<JqSource>,
   pub extractors: Vec<ExtractorConfig>,
 }
 
@@ -218,6 +253,36 @@ fn validate_queue_config(
   queue_name: &str,
   raw: QueueConfigRaw,
 ) -> Result<QueueConfig, ConfigError> {
+  let mode = match raw.mode {
+    QueueModeRaw::Exclusive => QueueMode::Exclusive,
+    QueueModeRaw::Broadcast => QueueMode::Broadcast,
+  };
+
+  let combiner = match (raw.combiner_jq_exp, raw.combiner_jq_file) {
+    (Some(exp), None) => Some(JqSource::Inline(exp)),
+    (None, Some(file)) => Some(JqSource::File(file)),
+    (Some(_), Some(_)) => {
+      return Err(ConfigError::BroadcastMissingCombiner {
+        queue: queue_name.to_string(),
+      });
+    }
+    (None, None) => None,
+  };
+
+  match mode {
+    QueueMode::Broadcast if combiner.is_none() => {
+      return Err(ConfigError::BroadcastMissingCombiner {
+        queue: queue_name.to_string(),
+      });
+    }
+    QueueMode::Exclusive if combiner.is_some() => {
+      return Err(ConfigError::ExclusiveCombinerForbidden {
+        queue: queue_name.to_string(),
+      });
+    }
+    _ => {}
+  }
+
   let extractors = raw
     .extractors
     .into_iter()
@@ -228,6 +293,8 @@ fn validate_queue_config(
 
   Ok(QueueConfig {
     route: raw.route,
+    mode,
+    combiner,
     extractors,
   })
 }

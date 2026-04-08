@@ -28,3 +28,5 @@ tokio = { workspace = true }
 axum = { workspace = true }
 reqwest = { workspace = true }
 uuid = { workspace = true }
+futures-util = { workspace = true }
+eventsource-stream = { workspace = true }

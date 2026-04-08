@@ -8,14 +8,18 @@
 //   cargo test -p garage-queue-server
 
 use async_nats::jetstream;
+use eventsource_stream::Eventsource;
+use futures_util::StreamExt;
 use garage_queue_lib::{
   capability::WorkerCapabilities,
-  protocol::{QueueItem, WorkPoll, WorkResult},
+  protocol::{QueueItem, WorkPoll, WorkResult, WorkerConnect},
 };
 use garage_queue_lib::{LogFormat, LogLevel};
 use garage_queue_server::{
   build_router,
-  config::{Config, ExtractorConfig, ExtractorKind, JqSource, QueueConfig},
+  config::{
+    Config, ExtractorConfig, ExtractorKind, JqSource, QueueConfig, QueueMode,
+  },
   intake::CompiledQueue,
   state::AppState,
 };
@@ -141,6 +145,8 @@ impl TestServer {
           "test".to_string(),
           QueueConfig {
             route: Some("/test".to_string()),
+            mode: QueueMode::Exclusive,
+            combiner: None,
             extractors: vec![],
           },
         )]),
@@ -154,6 +160,31 @@ impl Drop for TestServer {
   fn drop(&mut self) {
     self.handle.abort();
   }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Read the next SSE event with event type "work" from a stream, with timeout.
+async fn next_sse_work_event<S>(stream: &mut S) -> eventsource_stream::Event
+where
+  S: futures_util::Stream<
+      Item = Result<
+        eventsource_stream::Event,
+        eventsource_stream::EventStreamError<reqwest::Error>,
+      >,
+    > + Unpin,
+{
+  tokio::time::timeout(Duration::from_secs(5), async {
+    loop {
+      match stream.next().await {
+        Some(Ok(ev)) if ev.event == "work" => return ev,
+        Some(Ok(_)) => continue,
+        other => panic!("unexpected SSE event: {other:?}"),
+      }
+    }
+  })
+  .await
+  .expect("timed out waiting for SSE work event")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -196,6 +227,7 @@ async fn result_for_unknown_item_returns_404() {
     .post(format!("http://{}/api/work/result", server.addr))
     .json(&WorkResult {
       item_id: Uuid::new_v4(),
+      worker_id: "test-worker".into(),
       response: json!({}),
     })
     .send()
@@ -264,6 +296,7 @@ async fn intake_poll_result_round_trip() {
     .post(format!("{base}/api/work/result"))
     .json(&WorkResult {
       item_id: item.id,
+      worker_id: "test-worker".into(),
       response: worker_response.clone(),
     })
     .send()
@@ -295,6 +328,8 @@ async fn poll_skips_items_with_unmet_tag_requirement() {
         "tagged".to_string(),
         QueueConfig {
           route: Some("/tagged".to_string()),
+          mode: QueueMode::Exclusive,
+          combiner: None,
           extractors: vec![ExtractorConfig {
             capability: "model".to_string(),
             kind: ExtractorKind::Tag,
@@ -371,6 +406,8 @@ async fn poll_matches_scalar_capability() {
         "gpu".to_string(),
         QueueConfig {
           route: Some("/gpu".to_string()),
+          mode: QueueMode::Exclusive,
+          combiner: None,
           extractors: vec![ExtractorConfig {
             capability: "vram_mb".to_string(),
             kind: ExtractorKind::Scalar,
@@ -544,4 +581,417 @@ async fn concurrent_polls_get_different_items() {
   let item2: QueueItem = r2.unwrap().json().await.unwrap();
 
   assert_ne!(item1.id, item2.id, "concurrent polls should get different items");
+}
+
+// ── SSE tests ─────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn sse_connect_and_receive_work() {
+  let nats = TestNats::acquire();
+  let server = TestServer::start(&nats.url).await;
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Connect a worker via SSE.
+  let sse_resp = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "sse-worker-1".into(),
+      capabilities: WorkerCapabilities::default(),
+    })
+    .send()
+    .await
+    .unwrap();
+  assert!(sse_resp.status().is_success());
+
+  let mut sse_stream = sse_resp.bytes_stream().eventsource();
+
+  // Enqueue an item — the SSE worker should receive it.
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client
+        .post(format!("{base}/test"))
+        .json(&json!({ "prompt": "hello via SSE" }))
+        .send()
+        .await
+        .unwrap()
+    })
+  };
+
+  // Read the work event from the SSE stream.
+  let event = next_sse_work_event(&mut sse_stream).await;
+  let item: QueueItem =
+    serde_json::from_str(&event.data).expect("deserialise QueueItem");
+  assert_eq!(item.payload["prompt"], "hello via SSE");
+
+  // Post result.
+  let result_resp = client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item.id,
+      worker_id: "sse-worker-1".into(),
+      response: json!({ "answer": "hi" }),
+    })
+    .send()
+    .await
+    .unwrap();
+  assert_eq!(result_resp.status(), 200);
+
+  // The intake request should now resolve.
+  let intake_resp = intake_handle.await.unwrap();
+  assert_eq!(intake_resp.status(), 200);
+  let body: serde_json::Value = intake_resp.json().await.unwrap();
+  assert_eq!(body, json!({ "answer": "hi" }));
+}
+
+#[tokio::test]
+async fn sse_duplicate_worker_id_rejected() {
+  let nats = TestNats::acquire();
+  let server = TestServer::start(&nats.url).await;
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  let body = WorkerConnect {
+    worker_id: "dupe-worker".into(),
+    capabilities: WorkerCapabilities::default(),
+  };
+
+  // First connection should succeed (keep it alive by holding the response).
+  let _first = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&body)
+    .send()
+    .await
+    .unwrap();
+
+  // Give the server time to register the worker.
+  tokio::time::sleep(Duration::from_millis(50)).await;
+
+  // Second connection with the same ID should get 409.
+  let second = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&body)
+    .send()
+    .await
+    .unwrap();
+
+  assert_eq!(second.status(), 409);
+}
+
+#[tokio::test]
+async fn sse_disconnect_allows_re_registration() {
+  let nats = TestNats::acquire();
+  let server = TestServer::start(&nats.url).await;
+  let base = format!("http://{}", server.addr);
+
+  let body = WorkerConnect {
+    worker_id: "reconnect-worker".into(),
+    capabilities: WorkerCapabilities::default(),
+  };
+
+  // Connect, start reading the stream, then drop it to force a disconnect.
+  {
+    // Use a separate client with no connection pool so the TCP socket
+    // closes immediately on drop.
+    let ephemeral = reqwest::Client::builder()
+      .pool_max_idle_per_host(0)
+      .build()
+      .unwrap();
+    let resp = ephemeral
+      .post(format!("{base}/api/work/connect"))
+      .json(&body)
+      .send()
+      .await
+      .unwrap();
+    // Start reading the stream so the server begins writing keep-alives.
+    let mut stream = resp.bytes_stream().eventsource();
+    // Read one keep-alive or event to confirm the connection is live.
+    let _ =
+      tokio::time::timeout(Duration::from_millis(200), stream.next()).await;
+    // Stream and client dropped here — TCP socket closes.
+  }
+
+  // Give the server time to detect the closed connection and deregister.
+  // Keep-alive fires every 1 second; the failed write triggers cleanup.
+  tokio::time::sleep(Duration::from_secs(3)).await;
+
+  // Re-registration should succeed.
+  let client = reqwest::Client::new();
+  let resp = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&body)
+    .send()
+    .await
+    .unwrap();
+
+  assert!(resp.status().is_success());
+}
+
+#[tokio::test]
+async fn exclusive_pending_dispatched_on_connect() {
+  let nats = TestNats::acquire();
+  let server = TestServer::start(&nats.url).await;
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Enqueue an item when no workers are connected.
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client
+        .post(format!("{base}/test"))
+        .json(&json!({ "prompt": "pending dispatch" }))
+        .send()
+        .await
+        .unwrap()
+    })
+  };
+
+  tokio::time::sleep(Duration::from_millis(100)).await;
+
+  // Now connect a worker — it should immediately receive the pending item.
+  let sse_resp = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "late-worker".into(),
+      capabilities: WorkerCapabilities::default(),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  let mut sse_stream = sse_resp.bytes_stream().eventsource();
+
+  let event = next_sse_work_event(&mut sse_stream).await;
+  let item: QueueItem = serde_json::from_str(&event.data).unwrap();
+  assert_eq!(item.payload["prompt"], "pending dispatch");
+
+  // Complete the item.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item.id,
+      worker_id: "late-worker".into(),
+      response: json!({ "done": true }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  let intake_resp = intake_handle.await.unwrap();
+  assert_eq!(intake_resp.status(), 200);
+}
+
+// ── Broadcast tests ───────────────────────────────────────────────────────────
+
+fn broadcast_config(nats_url: &str) -> Config {
+  Config {
+    log_level: LogLevel::Warn,
+    log_format: LogFormat::Text,
+    listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+    nats_url: nats_url.to_string(),
+    queues: HashMap::from([(
+      "bcast".to_string(),
+      QueueConfig {
+        route: Some("/bcast".to_string()),
+        mode: QueueMode::Broadcast,
+        combiner: Some(JqSource::Inline("[.[] | .response] | add".to_string())),
+        extractors: vec![],
+      },
+    )]),
+  }
+}
+
+#[tokio::test]
+async fn broadcast_all_workers_receive_item() {
+  let nats = TestNats::acquire();
+  let server =
+    TestServer::start_with(&nats.url, broadcast_config(&nats.url)).await;
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Connect two workers.
+  let sse1 = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "bw1".into(),
+      capabilities: WorkerCapabilities::default(),
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut stream1 = sse1.bytes_stream().eventsource();
+
+  let sse2 = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "bw2".into(),
+      capabilities: WorkerCapabilities::default(),
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut stream2 = sse2.bytes_stream().eventsource();
+
+  tokio::time::sleep(Duration::from_millis(100)).await;
+
+  // Enqueue a broadcast item.
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client
+        .post(format!("{base}/bcast"))
+        .json(&json!({ "query": "tags" }))
+        .send()
+        .await
+        .unwrap()
+    })
+  };
+
+  // Both workers should receive the item.
+  let ev1 = next_sse_work_event(&mut stream1).await;
+  let ev2 = next_sse_work_event(&mut stream2).await;
+
+  let item1: QueueItem = serde_json::from_str(&ev1.data).unwrap();
+  let item2: QueueItem = serde_json::from_str(&ev2.data).unwrap();
+  assert_eq!(item1.id, item2.id, "both workers should get the same item");
+
+  // Both workers respond.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item1.id,
+      worker_id: "bw1".into(),
+      response: json!({ "models": ["a"] }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item1.id,
+      worker_id: "bw2".into(),
+      response: json!({ "models": ["b"] }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  // The intake request should resolve with the combined result.
+  let intake_resp = intake_handle.await.unwrap();
+  assert_eq!(intake_resp.status(), 200);
+  let body: serde_json::Value = intake_resp.json().await.unwrap();
+
+  // The combiner is `[.[] | .response] | add`, which concatenates the
+  // response objects.  With two objects {"models":["a"]} and
+  // {"models":["b"]}, `add` on objects merges them; last key wins.
+  // The exact output depends on response order, but the body should be
+  // a valid JSON object.
+  assert!(body.is_object(), "combined result should be an object");
+}
+
+#[tokio::test]
+async fn broadcast_combiner_merges_responses() {
+  let nats = TestNats::acquire();
+
+  // Use a combiner that collects all response values into an array.
+  let config = Config {
+    log_level: LogLevel::Warn,
+    log_format: LogFormat::Text,
+    listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+    nats_url: nats.url.clone(),
+    queues: HashMap::from([(
+      "merge".to_string(),
+      QueueConfig {
+        route: Some("/merge".to_string()),
+        mode: QueueMode::Broadcast,
+        combiner: Some(JqSource::Inline(
+          "[.[] | .response.value] | sort".to_string(),
+        )),
+        extractors: vec![],
+      },
+    )]),
+  };
+
+  let server = TestServer::start_with(&nats.url, config).await;
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Connect two workers.
+  let sse1 = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "mw1".into(),
+      capabilities: WorkerCapabilities::default(),
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut stream1 = sse1.bytes_stream().eventsource();
+
+  let sse2 = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "mw2".into(),
+      capabilities: WorkerCapabilities::default(),
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut stream2 = sse2.bytes_stream().eventsource();
+
+  tokio::time::sleep(Duration::from_millis(100)).await;
+
+  // Enqueue.
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client
+        .post(format!("{base}/merge"))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+    })
+  };
+
+  // Drain work events.
+  let ev1 = next_sse_work_event(&mut stream1).await;
+  let item1: QueueItem = serde_json::from_str(&ev1.data).unwrap();
+  let _ev2 = next_sse_work_event(&mut stream2).await;
+
+  // Workers respond with distinct values.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item1.id,
+      worker_id: "mw1".into(),
+      response: json!({ "value": 10 }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item1.id,
+      worker_id: "mw2".into(),
+      response: json!({ "value": 20 }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  let intake_resp = intake_handle.await.unwrap();
+  assert_eq!(intake_resp.status(), 200);
+  let body: serde_json::Value = intake_resp.json().await.unwrap();
+  assert_eq!(body, json!([10, 20]));
 }

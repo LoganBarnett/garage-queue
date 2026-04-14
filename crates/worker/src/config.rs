@@ -54,7 +54,15 @@ pub struct ConfigFileRaw {
   pub worker: Option<WorkerSectionRaw>,
   pub control: Option<ControlSectionRaw>,
   pub capabilities: Option<WorkerCapabilities>,
+  pub concurrency: Option<ConcurrencyConfigRaw>,
   pub delegator: Option<DelegatorConfigRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConcurrencyConfigRaw {
+  pub default: Option<u32>,
+  #[serde(flatten)]
+  pub overrides: std::collections::HashMap<String, u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +115,7 @@ pub struct Config {
   pub reconnect_interval_ms: u64,
   pub control_bind: SocketAddr,
   pub capabilities: WorkerCapabilities,
+  pub concurrency: garage_queue_lib::protocol::ConcurrencyConfig,
   pub delegator: DelegatorConfig,
 }
 
@@ -172,6 +181,17 @@ impl Config {
 
     let capabilities = file.capabilities.unwrap_or_default();
 
+    let concurrency = match file.concurrency {
+      Some(raw) => {
+        let default_val = raw.default.unwrap_or(1);
+        garage_queue_lib::protocol::ConcurrencyConfig {
+          default: default_val,
+          overrides: raw.overrides,
+        }
+      }
+      None => garage_queue_lib::protocol::ConcurrencyConfig::default(),
+    };
+
     let delegator = match file.delegator {
       Some(DelegatorConfigRaw::Http { url }) => DelegatorConfig::Http { url },
       None => {
@@ -189,6 +209,7 @@ impl Config {
       reconnect_interval_ms,
       control_bind,
       capabilities,
+      concurrency,
       delegator,
     })
   }

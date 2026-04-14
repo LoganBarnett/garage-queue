@@ -56,7 +56,6 @@ in
         {
           server = {
             listen = "0.0.0.0:9090";
-            nats_url = "nats://localhost:4222";
           };
         }
       '';

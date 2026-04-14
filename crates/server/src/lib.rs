@@ -17,7 +17,6 @@ pub fn build_router(state: AppState, config: &Config) -> Router {
   let mut router = Router::new()
     .route("/healthz", get(routes::health::healthz))
     .route("/api/work/connect", post(routes::sse::connect))
-    .route("/api/work/poll", post(routes::work::poll))
     .route("/api/work/result", post(routes::work::result));
 
   for queue_cfg in config.queues.values() {

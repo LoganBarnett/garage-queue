@@ -9,10 +9,12 @@ capabilities to handle it.
 
 The system is built around three programs:
 
-- ~garage-queue-server~ — accepts producer requests via HTTP, persists items to
-  NATS JetStream, holds connections open while waiting for results.
-- ~garage-queue-worker~ — polls the server for items its capabilities can
-  satisfy, executes them via a configured delegator, and returns results.
+- ~garage-queue-server~ — accepts producer requests via HTTP, matches items to
+  workers, holds connections open while waiting for results.
+- ~garage-queue-worker~ — connects to the server via SSE, receives matching work
+  items, delegates them to a configured HTTP backend, and returns results.
+  Workers can process multiple items concurrently via per-queue concurrency
+  limits.
 - ~garage-queue-cli~ — inspection and management tool.
 
 The first delegator type is HTTP forwarding, intended for Ollama inference
@@ -23,12 +25,16 @@ those concerns live entirely in configuration.
 
 #+begin_src d2 :exports results
 Producer -> Server: "POST /route (HTTP)"
-Server -> "NATS JetStream": "persist item"
-Server <- Worker: "POST /api/work/poll"
+Server -> Worker: "SSE event: work item"
 Worker -> Delegator: "HTTP forward"
 Worker -> Server: "POST /api/work/result"
 "Control Server" -> Worker: "pause / resume / stop"
 #+end_src
+
+Workers connect via SSE and advertise their capabilities and per-queue
+concurrency limits.  The server pushes work items as SSE events only when
+the worker has available concurrency slots, giving pull semantics over a
+push transport.
 
 * Running
 
@@ -82,9 +88,9 @@ garage-queue-cli --server-url http://192.168.1.10:9090 health
 * Capability matching
 
 Every queue item carries a list of requirements extracted from its payload at
-intake time.  Every worker advertises its capabilities when polling.  The server
-only offers an item to a worker whose capabilities satisfy *all* of the item's
-requirements.
+intake time.  Every worker advertises its capabilities when connecting.  The
+server only offers an item to a worker whose capabilities satisfy *all* of the
+item's requirements.
 
 ** Tags
 
@@ -109,11 +115,11 @@ log_format = "text"
 [server]
 # Use a Unix socket, or "0.0.0.0:9090" for TCP.
 listen = "unix:/run/garage-queue/server.sock"
-nats_url = "nats://127.0.0.1:4222"
 
 [queues.ollama]
 # HTTP path at which this queue accepts intake requests.
 route = "/api/generate"
+method = "post"
 
 [queues.ollama.extractors.model_tag]
 kind = "tag"
@@ -132,7 +138,8 @@ jq_file = "extractors/vram.jq"
 #+begin_src toml :exports code
 [worker]
 server_url = "http://192.168.1.10:9090"
-poll_interval_ms = 1000
+id = "titanium"
+reconnect_interval_ms = 1000
 
 [control]
 host = "127.0.0.1"
@@ -143,6 +150,12 @@ tags = ["llama3.2:8b", "gemma2:9b"]
 
 [capabilities.scalars]
 vram_mb = 16384
+
+[concurrency]
+# Default concurrency for all queues (sequential processing).
+default = 1
+# Override for specific queues.  The tags queue is cheap, allow 4 in-flight.
+ollama-tags = 4
 
 [delegator]
 kind = "http"
@@ -185,20 +198,17 @@ $overrides[$m] //
 Workers expose a local HTTP control server (default ~127.0.0.1:9091~) for
 integration with process supervisors such as sytter:
 
-| Endpoint                       | Effect                                           |
-|--------------------------------+--------------------------------------------------|
-| ~POST /control/pause~          | Stop accepting new items; finish current item    |
-| ~POST /control/resume~         | Resume accepting items                           |
-| ~POST /control/stop~           | Finish current item, then exit                   |
-| ~POST /control/stop/immediate~ | Exit immediately; current item is abandoned      |
-
-An abandoned item was never acknowledged, so it will be redelivered when the
-server restarts.
+| Endpoint                       | Effect                                                   |
+|--------------------------------+----------------------------------------------------------|
+| ~POST /control/pause~          | Stop accepting new items; finish in-flight items         |
+| ~POST /control/resume~         | Resume accepting items                                   |
+| ~POST /control/stop~           | Finish in-flight items, then exit                        |
+| ~POST /control/stop/immediate~ | Exit immediately; in-flight items are abandoned          |
 
 * NixOS
 
-Import the server module on the machine running NATS and the queue server,
-and the worker module on each worker machine:
+Import the server module on the machine running the queue server, and the worker
+module on each worker machine:
 
 #+begin_src nix :exports code
 # flake.nix (consumer)
@@ -214,7 +224,6 @@ services.garage-queue-server = {
   # socket activation.  Set socket = null; host = "0.0.0.0"; port = 9090;
   # to use TCP instead.
   settings = {
-    server.nats_url = "nats://localhost:4222";
     queues.ollama = {
       route = "/api/generate";
       extractors.model_tag = {
@@ -231,19 +240,24 @@ services.garage-queue-server = {
 # Worker NixOS configuration
 imports = [ garage-queue.nixosModules.worker ];
 
-services.garage-queue-worker = {
+services.garage-queue-worker.workers.gpu = {
   enable = true;
   settings = {
     worker = {
       server_url = "http://192.168.1.10:9090";
-      poll_interval_ms = 1000;
+      id = "titanium";
+      reconnect_interval_ms = 1000;
     };
     control = { host = "127.0.0.1"; port = 9091; };
     capabilities = {
       tags = [ "llama3.2:8b" ];
       scalars.vram_mb = 8192;
     };
-    delegator = { kind = "http"; url = "http://localhost:11434"; };
+    concurrency = {
+      default = 1;
+      ollama-tags = 4;
+    };
+    delegator = { kind = "http"; url = "http://localhost:11434/api/generate"; };
   };
 };
 #+end_src
@@ -264,6 +278,10 @@ services.garage-queue-worker = {
     capabilities = {
       tags = [ "llama3.2:8b" "llama3.2:3b" ];
       scalars.vram_mb = 8192;
+    };
+    concurrency = {
+      default = 1;
+      ollama-tags = 4;
     };
     delegator = { kind = "http"; url = "http://localhost:11434"; };
   };
@@ -301,13 +319,3 @@ item requirement).  If a use case arises where a different comparator is
 needed (e.g. ~<=~ for a budget that must not be exceeded), the config should
 gain an explicit ~compare~ field on scalar extractors and a corresponding
 field on worker scalar declarations, rather than hard-coding the direction.
-
-** In-flight tracking and requeue-on-crash
-
-When the server crashes, items held in the in-memory pending queue but not yet
-acked in NATS are replayed on restart.  Items that were mid-flight (dispatched
-to a worker but not yet returned) are also replayed.  There is currently no
-in-process timeout: a crashed worker leaves its item's producer waiting until
-the server restarts.  An in-flight timeout with automatic requeue would improve
-resilience.
-

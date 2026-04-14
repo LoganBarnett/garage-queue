@@ -90,6 +90,10 @@ in
                   port = 9091;
                 };
                 capabilities.scalars.vram_mb = 16384;
+                concurrency = {
+                  default = 1;
+                  ollama-tags = 4;
+                };
               }
             '';
           };

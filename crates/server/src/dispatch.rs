@@ -1,279 +1,282 @@
-use crate::state::{AppState, BroadcastPending};
-use garage_queue_lib::protocol::QueueItem;
-use std::collections::HashSet;
-use tokio::sync::oneshot;
+use crate::config::QueueMode;
+use crate::state::AppState;
 use tracing::{info, warn};
+use uuid::Uuid;
 
-/// Result of attempting to dispatch an item.
-pub enum DispatchOutcome {
-  /// The item was sent directly to a worker (or workers).
-  Dispatched,
-  /// No matching worker was available; the item remains in the pending queue.
-  Queued,
+/// Attempt to dispatch eligible queue items to a specific worker.
+///
+/// Scans the queue in FIFO order looking for items that:
+/// 1. The worker satisfies capability-wise.
+/// 2. The worker has not already been delivered to for this item.
+/// 3. The item is not yet delivery-saturated.
+/// 4. The worker has a free concurrency slot for the item's queue.
+///
+/// Dispatches as many items as the worker has available slots.
+pub async fn try_dispatch(state: &AppState, worker_id: &str) {
+  loop {
+    let dispatched = try_dispatch_one(state, worker_id).await;
+    if !dispatched {
+      break;
+    }
+  }
 }
 
-/// Attempt to dispatch an exclusive item to the first idle matching worker.
-///
-/// If a worker is available, the item is sent via its channel and the worker
-/// is marked busy.  Otherwise the item is placed in the pending queue and
-/// the producer's oneshot is registered for later completion.
-pub async fn dispatch_exclusive(
-  state: &AppState,
-  item: QueueItem,
-  producer_tx: oneshot::Sender<serde_json::Value>,
-) -> DispatchOutcome {
+/// Try to dispatch one item to a specific worker.  Returns true if an item
+/// was dispatched, false if no eligible item was found.
+async fn try_dispatch_one(state: &AppState, worker_id: &str) -> bool {
+  let mut queue = state.queue.lock().await;
   let mut registry = state.registry.lock().await;
-  let workers = registry.idle_workers_matching(&item.requirements);
 
-  if let Some(worker) = workers.into_iter().next() {
-    let worker_id = worker.worker_id.clone();
-    let tx = worker.tx.clone();
-    registry.mark_busy(&worker_id);
-    drop(registry);
+  let worker = match registry.get(worker_id) {
+    Some(w) => w,
+    None => return false,
+  };
 
-    // Register the oneshot before sending, so the result handler finds it.
-    state
-      .pending_responses
-      .lock()
-      .await
-      .insert(item.id, producer_tx);
-
-    if tx.send(item.clone()).await.is_err() {
-      warn!(
-        worker_id = %worker_id,
-        item_id = %item.id,
-        "Worker channel closed during dispatch, re-queuing"
-      );
-      // Worker disconnected between lookup and send — re-queue.
-      let mut pending = state.pending.lock().await;
-      pending.push_back(item);
-      return DispatchOutcome::Queued;
+  // Find the first eligible item.
+  let eligible_item_id = queue.iter().find_map(|(item_id, entry)| {
+    // Worker must satisfy item requirements.
+    if !garage_queue_lib::matching::satisfies(
+      &entry.item.requirements,
+      &worker.capabilities,
+    ) {
+      return None;
     }
 
-    info!(
-      item_id = %item.id,
-      worker_id = %worker_id,
-      "Dispatched item to worker (exclusive)"
-    );
-    DispatchOutcome::Dispatched
-  } else {
-    drop(registry);
-    // No worker available — queue the item for later.
-    state
-      .pending_responses
-      .lock()
-      .await
-      .insert(item.id, producer_tx);
-    state.pending.lock().await.push_back(item);
-    DispatchOutcome::Queued
-  }
-}
+    // Worker must not already have this item.
+    if entry.delivered.contains(worker_id) {
+      return None;
+    }
 
-/// Attempt to dispatch a broadcast item to all matching workers.
-///
-/// If matching workers exist, the item is cloned to each worker's channel
-/// and a BroadcastPending entry tracks the expected respondent set.  If no
-/// workers are available, the item is placed in the pending queue.
-pub async fn dispatch_broadcast(
-  state: &AppState,
-  item: QueueItem,
-  producer_tx: oneshot::Sender<serde_json::Value>,
-) -> DispatchOutcome {
-  let registry = state.registry.lock().await;
-  let workers = registry.all_workers_matching(&item.requirements);
+    // Item must not be delivery-saturated.
+    if is_delivery_saturated(entry, &registry) {
+      return None;
+    }
 
-  if workers.is_empty() {
-    drop(registry);
-    state.pending.lock().await.push_back(item.clone());
-    state
-      .pending_broadcast_tx
-      .lock()
-      .await
-      .insert(item.id, producer_tx);
-    return DispatchOutcome::Queued;
-  }
+    // Worker must have a free slot for this queue.
+    if !worker.is_ready_for(&entry.item.queue) {
+      return None;
+    }
 
-  let remaining: HashSet<String> =
-    workers.iter().map(|w| w.worker_id.clone()).collect();
-  let channels: Vec<_> = workers
-    .iter()
-    .map(|w| (w.worker_id.clone(), w.tx.clone()))
-    .collect();
+    Some(*item_id)
+  });
+
+  let item_id = match eligible_item_id {
+    Some(id) => id,
+    None => return false,
+  };
+
+  // We found an eligible item — dispatch it.
+  let entry = queue.get_mut(&item_id).unwrap();
+  let item = entry.item.clone();
+  entry.delivered.insert(worker_id.to_string());
+
+  let tx = worker.tx.clone();
+  let worker = registry.get_mut(worker_id).unwrap();
+  worker.increment_in_flight(&item.queue);
+
   drop(registry);
+  drop(queue);
 
-  let pending_entry = BroadcastPending {
-    remaining,
-    responses: Vec::new(),
-    queue: item.queue.clone(),
-    tx: producer_tx,
-  };
-
-  state
-    .broadcast_pending
-    .lock()
-    .await
-    .insert(item.id, pending_entry);
-
-  for (worker_id, tx) in channels {
-    if tx.send(item.clone()).await.is_err() {
-      warn!(
-        worker_id = %worker_id,
-        item_id = %item.id,
-        "Worker channel closed during broadcast dispatch"
-      );
-      // Remove this worker from the expected respondent set.
-      let mut bp = state.broadcast_pending.lock().await;
-      if let Some(entry) = bp.get_mut(&item.id) {
-        entry.remaining.remove(&worker_id);
-      }
+  if tx.send(item.clone()).await.is_err() {
+    warn!(
+      worker_id = %worker_id,
+      item_id = %item_id,
+      "Worker channel closed during dispatch, rolling back"
+    );
+    // Roll back: remove from delivered, decrement in-flight.
+    let mut queue = state.queue.lock().await;
+    if let Some(entry) = queue.get_mut(&item_id) {
+      entry.delivered.remove(worker_id);
     }
-  }
-
-  // Check if all workers failed immediately.
-  let should_complete = {
-    let bp = state.broadcast_pending.lock().await;
-    bp.get(&item.id)
-      .map(|e| e.remaining.is_empty())
-      .unwrap_or(false)
-  };
-
-  if should_complete {
-    complete_broadcast(state, item.id).await;
+    let mut registry = state.registry.lock().await;
+    if let Some(worker) = registry.get_mut(worker_id) {
+      worker.decrement_in_flight(&item.queue);
+    }
+    return false;
   }
 
   info!(
-    item_id = %item.id,
-    "Dispatched item to workers (broadcast)"
+    item_id = %item_id,
+    worker_id = %worker_id,
+    queue = %item.queue,
+    "Dispatched item to worker"
   );
-  DispatchOutcome::Dispatched
+  true
 }
 
-/// Called when a worker becomes idle or first connects.  Attempts to
-/// dispatch the first matching pending item to the worker.
-pub async fn try_dispatch_pending(state: &AppState, worker_id: &str) {
-  let mut pending = state.pending.lock().await;
-  let registry = state.registry.lock().await;
-
-  let worker = match registry
-    .idle_workers_matching(&[])
-    .into_iter()
-    .find(|w| w.worker_id == worker_id)
-  {
-    Some(w) => w,
-    None => return,
+/// Attempt to dispatch items to all ready workers.  Called when a new item
+/// is enqueued.
+pub async fn try_dispatch_all(state: &AppState) {
+  let worker_ids = {
+    let registry = state.registry.lock().await;
+    registry.worker_ids()
   };
 
-  let position = pending.iter().position(|item| {
-    garage_queue_lib::matching::satisfies(
-      &item.requirements,
-      &worker.capabilities,
-    )
-  });
-
-  let Some(idx) = position else { return };
-  let item = pending.remove(idx).expect("position just confirmed");
-  let tx = worker.tx.clone();
-  let wid = worker.worker_id.clone();
-  drop(registry);
-  drop(pending);
-
-  // Determine if this pending item is exclusive or broadcast by checking
-  // which oneshot map contains it.
-  let is_broadcast = state
-    .pending_broadcast_tx
-    .lock()
-    .await
-    .contains_key(&item.id);
-
-  if is_broadcast {
-    // For a pending broadcast item, we need to re-dispatch it fully now
-    // that a worker is available.
-    let producer_tx = state.pending_broadcast_tx.lock().await.remove(&item.id);
-    if let Some(ptx) = producer_tx {
-      // Re-dispatch as broadcast (now workers exist).
-      dispatch_broadcast(state, item, ptx).await;
-    }
-  } else {
-    // Exclusive: send directly to this worker.
-    let mut reg = state.registry.lock().await;
-    reg.mark_busy(&wid);
-    drop(reg);
-
-    if tx.send(item.clone()).await.is_err() {
-      warn!(
-        worker_id = %wid,
-        item_id = %item.id,
-        "Worker channel closed during pending dispatch"
-      );
-      state.pending.lock().await.push_back(item);
-    } else {
-      info!(
-        item_id = %item.id,
-        worker_id = %wid,
-        "Dispatched pending item to worker (exclusive)"
-      );
-    }
+  for wid in worker_ids {
+    try_dispatch(state, &wid).await;
   }
 }
 
-/// Complete a broadcast when all responses have been collected (or all
-/// remaining workers have disconnected).  Runs the combiner and sends
-/// the result to the waiting producer.
-pub async fn complete_broadcast(state: &AppState, item_id: uuid::Uuid) {
-  let entry = state.broadcast_pending.lock().await.remove(&item_id);
+/// Handle a worker's result submission.  Records the response, checks
+/// completion, and re-dispatches if the worker has free slots.
+pub async fn handle_result(
+  state: &AppState,
+  worker_id: &str,
+  item_id: Uuid,
+  response: serde_json::Value,
+) -> bool {
+  let queue_name;
+  let should_complete;
+
+  {
+    let mut queue = state.queue.lock().await;
+    let entry = match queue.get_mut(&item_id) {
+      Some(e) => e,
+      None => return false,
+    };
+
+    queue_name = entry.item.queue.clone();
+    entry
+      .completed
+      .insert(worker_id.to_string(), response.clone());
+
+    should_complete = is_completion_met(entry);
+  }
+
+  // Decrement in-flight for this worker.
+  {
+    let mut registry = state.registry.lock().await;
+    if let Some(worker) = registry.get_mut(worker_id) {
+      worker.decrement_in_flight(&queue_name);
+    }
+  }
+
+  if should_complete {
+    complete_item(state, item_id).await;
+  }
+
+  info!(
+    item_id = %item_id,
+    worker_id = %worker_id,
+    "Result recorded"
+  );
+
+  // Worker may now be ready for more work.
+  try_dispatch(state, worker_id).await;
+
+  true
+}
+
+/// Complete an item: run combiner (broadcast) or forward response (exclusive),
+/// then remove from queue.
+async fn complete_item(state: &AppState, item_id: Uuid) {
+  let entry = {
+    let mut queue = state.queue.lock().await;
+    queue.shift_remove(&item_id)
+  };
+
   let Some(entry) = entry else { return };
 
-  let live = state.live.read().await;
-  let result = match live.compiled_queues.get(&entry.queue) {
-    Some(compiled) => compiled.combine(&entry.queue, &entry.responses),
-    None => {
-      warn!(
-        queue = %entry.queue,
-        item_id = %item_id,
-        "Compiled queue missing for broadcast combiner"
-      );
-      return;
+  let result = match entry.mode {
+    QueueMode::Exclusive => {
+      // Forward the single response.
+      entry.completed.into_values().next().unwrap_or_default()
+    }
+    QueueMode::Broadcast => {
+      // Run the combiner.
+      let responses: Vec<(String, serde_json::Value)> =
+        entry.completed.into_iter().collect();
+      let live = state.live.read().await;
+      match live.compiled_queues.get(&entry.item.queue) {
+        Some(compiled) => match compiled.combine(&entry.item.queue, &responses)
+        {
+          Ok(combined) => combined,
+          Err(e) => {
+            warn!(
+              item_id = %item_id,
+              error = %e,
+              "Combiner failed for broadcast item"
+            );
+            serde_json::json!({ "error": e.to_string() })
+          }
+        },
+        None => {
+          warn!(
+            queue = %entry.item.queue,
+            item_id = %item_id,
+            "Compiled queue missing for broadcast combiner"
+          );
+          return;
+        }
+      }
     }
   };
 
-  match result {
-    Ok(combined) => {
-      if entry.tx.send(combined).is_err() {
-        warn!(
-          item_id = %item_id,
-          "Producer dropped before broadcast result delivered"
-        );
-      }
-    }
-    Err(e) => {
+  if let Some(tx) = entry.producer_tx {
+    if tx.send(result).is_err() {
       warn!(
         item_id = %item_id,
-        error = %e,
-        "Combiner failed for broadcast item"
+        "Producer dropped before result delivered"
       );
-      // Send the error as a JSON response to unblock the producer.
-      let _ = entry.tx.send(serde_json::json!({ "error": e.to_string() }));
     }
   }
 }
 
-/// Handle a worker disconnecting from an in-flight broadcast.  Removes the
-/// worker from remaining respondent sets.  If it was the last one for any
-/// broadcast, completes that broadcast.
-pub async fn handle_broadcast_disconnect(state: &AppState, worker_id: &str) {
-  let items_to_complete: Vec<uuid::Uuid> = {
-    let mut bp = state.broadcast_pending.lock().await;
+/// Handle a worker disconnecting.  Removes the worker from `delivered` on
+/// all queue entries.  Un-saturated broadcast items become eligible again.
+/// Broadcast items where all delivered workers have completed are finished.
+pub async fn handle_disconnect(state: &AppState, worker_id: &str) {
+  let items_to_complete: Vec<Uuid>;
+  {
+    let mut queue = state.queue.lock().await;
     let mut to_complete = Vec::new();
-    for (item_id, entry) in bp.iter_mut() {
-      entry.remaining.remove(worker_id);
-      if entry.remaining.is_empty() {
+    for (item_id, entry) in queue.iter_mut() {
+      entry.delivered.remove(worker_id);
+      // Check if this broadcast item is now complete: all delivered workers
+      // have responded.
+      if entry.mode == QueueMode::Broadcast && is_completion_met(entry) {
         to_complete.push(*item_id);
       }
     }
-    to_complete
-  };
+    items_to_complete = to_complete;
+  }
 
   for item_id in items_to_complete {
-    complete_broadcast(state, item_id).await;
+    complete_item(state, item_id).await;
+  }
+
+  // After removing the worker from delivered sets, some items may have become
+  // un-saturated.  Try dispatching to remaining workers.
+  try_dispatch_all(state).await;
+}
+
+/// Check if an item has been delivered to enough workers.
+fn is_delivery_saturated(
+  entry: &crate::state::QueueEntry,
+  registry: &crate::registry::WorkerRegistry,
+) -> bool {
+  match entry.mode {
+    QueueMode::Exclusive => !entry.delivered.is_empty(),
+    QueueMode::Broadcast => {
+      // Saturated when all currently-connected matching workers have been
+      // delivered to.
+      let matching = registry.matching_worker_ids(&entry.item.requirements);
+      matching.iter().all(|wid| entry.delivered.contains(wid))
+    }
+  }
+}
+
+/// Check if the completion condition is met for an item.
+fn is_completion_met(entry: &crate::state::QueueEntry) -> bool {
+  match entry.mode {
+    QueueMode::Exclusive => !entry.completed.is_empty(),
+    QueueMode::Broadcast => {
+      // Complete when all delivered workers have responded.
+      !entry.delivered.is_empty()
+        && entry
+          .delivered
+          .iter()
+          .all(|wid| entry.completed.contains_key(wid))
+    }
   }
 }

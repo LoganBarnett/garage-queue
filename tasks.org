@@ -1,0 +1,8 @@
+#+title:     garage-queue tasks
+#+language:  en
+
+* DONE Remove NATS dependency from garage-queue-server
+
+Removed as part of the unified queue model refactoring.  All NATS references
+(async-nats dep, nats-server dev shell, persist_to_nats, jetstream field,
+nats_url config, TestNats fixture) have been deleted.

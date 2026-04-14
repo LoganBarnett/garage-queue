@@ -1,18 +1,13 @@
 // Integration tests for the queue server.
 //
-// A NATS server is started automatically on port 14222 for the duration of the
-// test binary.  Set NATS_URL to point at an already-running instance instead
-// (useful in CI where NATS is a sidecar service).
-//
 // Run with:
 //   cargo test -p garage-queue-server
 
-use async_nats::jetstream;
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use garage_queue_lib::{
   capability::WorkerCapabilities,
-  protocol::{QueueItem, WorkPoll, WorkResult, WorkerConnect},
+  protocol::{QueueItem, WorkResult, WorkerConnect},
 };
 use garage_queue_lib::{LogFormat, LogLevel};
 use garage_queue_server::{
@@ -25,69 +20,11 @@ use garage_queue_server::{
   state::AppState,
 };
 use serde_json::json;
-use std::{
-  collections::HashMap,
-  net::SocketAddr,
-  process::{Child, Command, Stdio},
-  sync::{Arc, Mutex, Once},
-  time::Duration,
-};
+use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::task::JoinHandle;
 use tokio_listener::ListenerAddress;
-use uuid::Uuid;
-
-// ── NATS fixture ──────────────────────────────────────────────────────────────
-
-const TEST_NATS_PORT: u16 = 14222;
-
-// All tests share one NATS process started by the first test to run.
-static NATS_INIT: Once = Once::new();
-static NATS_CHILD: Mutex<Option<Child>> = Mutex::new(None);
-
-struct TestNats {
-  pub url: String,
-}
-
-impl TestNats {
-  fn acquire() -> Self {
-    if let Ok(url) = std::env::var("NATS_URL") {
-      return Self { url };
-    }
-
-    NATS_INIT.call_once(|| {
-      let child = Command::new("nats-server")
-        .args(["-p", &TEST_NATS_PORT.to_string(), "-js"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("nats-server not found in PATH; add it to the dev shell");
-
-      // Busy-wait until the TCP port accepts connections.
-      for _ in 0..100 {
-        std::thread::sleep(Duration::from_millis(50));
-        if std::net::TcpStream::connect(("127.0.0.1", TEST_NATS_PORT)).is_ok() {
-          break;
-        }
-      }
-
-      // Intentionally not stopped on drop — the process is shared for
-      // the entire test binary run and cleaned up by the OS on exit.
-      *NATS_CHILD.lock().unwrap() = Some(child);
-    });
-
-    Self {
-      url: format!("nats://127.0.0.1:{TEST_NATS_PORT}"),
-    }
-  }
-}
 
 // ── In-process server fixture ─────────────────────────────────────────────────
-
-// All test servers publish to subjects under "items.>" and use a single shared
-// stream.  Because the pending queue is entirely in-memory inside AppState,
-// each TestServer instance is isolated from others regardless of the shared
-// NATS stream.
-const TEST_STREAM: &str = "GARAGE_QUEUE_TEST";
 
 struct TestServer {
   pub addr: SocketAddr,
@@ -95,20 +32,7 @@ struct TestServer {
 }
 
 impl TestServer {
-  async fn start_with(nats_url: &str, config: Config) -> Self {
-    let nats = async_nats::connect(nats_url)
-      .await
-      .expect("NATS connect failed");
-    let js = jetstream::new(nats);
-
-    js.get_or_create_stream(jetstream::stream::Config {
-      name: TEST_STREAM.to_string(),
-      subjects: vec!["items.>".to_string()],
-      ..Default::default()
-    })
-    .await
-    .expect("stream setup failed");
-
+  async fn start_with(config: Config) -> Self {
     let compiled_queues = config
       .queues
       .iter()
@@ -118,7 +42,7 @@ impl TestServer {
       .collect::<HashMap<_, _>>();
 
     let config = Arc::new(config);
-    let state = AppState::new(Arc::clone(&config), js, compiled_queues);
+    let state = AppState::new(Arc::clone(&config), compiled_queues);
     let app = build_router(state, &config);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -135,29 +59,25 @@ impl TestServer {
 
   /// Start a server with a single no-requirements queue named "test" at
   /// route "/test".  Any worker capabilities will match items on this queue.
-  async fn start(nats_url: &str) -> Self {
-    Self::start_with(
-      nats_url,
-      Config {
-        log_level: LogLevel::Warn,
-        log_format: LogFormat::Text,
-        listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
-        nats_url: nats_url.to_string(),
-        queues: HashMap::from([(
-          "test".to_string(),
-          QueueConfig {
-            route: Some("/test".to_string()),
-            method: Some(Method::Post),
-            mode: QueueMode::Exclusive,
-            combiner: None,
-            extractors: vec![],
-            delegate_path: None,
-            delegate_method: None,
-            intake_timeout_secs: None,
-          },
-        )]),
-      },
-    )
+  async fn start() -> Self {
+    Self::start_with(Config {
+      log_level: LogLevel::Warn,
+      log_format: LogFormat::Text,
+      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+      queues: HashMap::from([(
+        "test".to_string(),
+        QueueConfig {
+          route: Some("/test".to_string()),
+          method: Some(Method::Post),
+          mode: QueueMode::Exclusive,
+          combiner: None,
+          extractors: vec![],
+          delegate_path: None,
+          delegate_method: None,
+          intake_timeout_secs: None,
+        },
+      )]),
+    })
     .await
   }
 }
@@ -197,8 +117,7 @@ where
 
 #[tokio::test]
 async fn health_returns_200() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
+  let server = TestServer::start().await;
 
   let resp = reqwest::get(format!("http://{}/healthz", server.addr))
     .await
@@ -208,31 +127,13 @@ async fn health_returns_200() {
 }
 
 #[tokio::test]
-async fn poll_empty_queue_returns_204() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
-
-  let resp = reqwest::Client::new()
-    .post(format!("http://{}/api/work/poll", server.addr))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities::default(),
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(resp.status(), 204);
-}
-
-#[tokio::test]
 async fn result_for_unknown_item_returns_404() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
+  let server = TestServer::start().await;
 
   let resp = reqwest::Client::new()
     .post(format!("http://{}/api/work/result", server.addr))
     .json(&WorkResult {
-      item_id: Uuid::new_v4(),
+      item_id: uuid::Uuid::new_v4(),
       worker_id: "test-worker".into(),
       response: json!({}),
     })
@@ -245,8 +146,7 @@ async fn result_for_unknown_item_returns_404() {
 
 #[tokio::test]
 async fn unmapped_route_returns_404() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
+  let server = TestServer::start().await;
 
   let resp = reqwest::Client::new()
     .post(format!("http://{}/no/such/route", server.addr))
@@ -258,351 +158,11 @@ async fn unmapped_route_returns_404() {
   assert_eq!(resp.status(), 404);
 }
 
-#[tokio::test]
-async fn intake_poll_result_round_trip() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
-  let base = format!("http://{}", server.addr);
-  let client = reqwest::Client::new();
-
-  // POST /test blocks until a worker returns a result, so run it in a
-  // separate task.
-  let intake_handle = {
-    let client = client.clone();
-    let base = base.clone();
-    tokio::spawn(async move {
-      client
-        .post(format!("{base}/test"))
-        .json(&json!({ "model": "llama3.2:8b", "prompt": "hello" }))
-        .send()
-        .await
-        .unwrap()
-    })
-  };
-
-  // Give the request time to reach the server and be enqueued.
-  tokio::time::sleep(Duration::from_millis(100)).await;
-
-  // Poll — no requirements on the test queue, so any capabilities match.
-  let poll_resp = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities::default(),
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(poll_resp.status(), 200, "expected item from poll");
-  let item: QueueItem = poll_resp.json().await.unwrap();
-
-  // Return a result; the waiting intake request should now resolve.
-  let worker_response = json!({ "response": "The sky is blue." });
-  let result_resp = client
-    .post(format!("{base}/api/work/result"))
-    .json(&WorkResult {
-      item_id: item.id,
-      worker_id: "test-worker".into(),
-      response: worker_response.clone(),
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(result_resp.status(), 200);
-
-  let intake_resp = intake_handle.await.unwrap();
-  assert_eq!(intake_resp.status(), 200);
-  let body: serde_json::Value = intake_resp.json().await.unwrap();
-  assert_eq!(body, worker_response);
-}
-
-#[tokio::test]
-async fn poll_skips_items_with_unmet_tag_requirement() {
-  let nats = TestNats::acquire();
-
-  // Build a server whose "tagged" queue requires a model tag extracted from
-  // the payload.
-  let server = TestServer::start_with(
-    &nats.url,
-    Config {
-      log_level: LogLevel::Warn,
-      log_format: LogFormat::Text,
-      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
-      nats_url: nats.url.clone(),
-      queues: HashMap::from([(
-        "tagged".to_string(),
-        QueueConfig {
-          route: Some("/tagged".to_string()),
-          method: Some(Method::Post),
-          mode: QueueMode::Exclusive,
-          combiner: None,
-          extractors: vec![ExtractorConfig {
-            capability: "model".to_string(),
-            kind: ExtractorKind::Tag,
-            source: JqSource::Inline(".model".to_string()),
-          }],
-          delegate_path: None,
-          delegate_method: None,
-          intake_timeout_secs: None,
-        },
-      )]),
-    },
-  )
-  .await;
-
-  let base = format!("http://{}", server.addr);
-  let client = reqwest::Client::new();
-
-  // Enqueue an item that requires the "llama3.2:8b" tag.
-  let _enqueue = {
-    let client = client.clone();
-    let base = base.clone();
-    tokio::spawn(async move {
-      client
-        .post(format!("{base}/tagged"))
-        .json(&json!({ "model": "llama3.2:8b" }))
-        .send()
-        .await
-        .ok()
-    })
-  };
-
-  tokio::time::sleep(Duration::from_millis(100)).await;
-
-  // A worker advertising the wrong model should see nothing.
-  let wrong_resp = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities {
-        tags: vec!["gemma2:9b".to_string()],
-        ..Default::default()
-      },
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(wrong_resp.status(), 204, "wrong tag should get 204");
-
-  // A worker advertising the correct model should receive the item.
-  let right_resp = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities {
-        tags: vec!["llama3.2:8b".to_string()],
-        ..Default::default()
-      },
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(right_resp.status(), 200, "correct tag should get item");
-}
-
-#[tokio::test]
-async fn poll_matches_scalar_capability() {
-  let nats = TestNats::acquire();
-
-  let server = TestServer::start_with(
-    &nats.url,
-    Config {
-      log_level: LogLevel::Warn,
-      log_format: LogFormat::Text,
-      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
-      nats_url: nats.url.clone(),
-      queues: HashMap::from([(
-        "gpu".to_string(),
-        QueueConfig {
-          route: Some("/gpu".to_string()),
-          method: Some(Method::Post),
-          mode: QueueMode::Exclusive,
-          combiner: None,
-          extractors: vec![ExtractorConfig {
-            capability: "vram_mb".to_string(),
-            kind: ExtractorKind::Scalar,
-            source: JqSource::Inline(".vram_mb".to_string()),
-          }],
-          delegate_path: None,
-          delegate_method: None,
-          intake_timeout_secs: None,
-        },
-      )]),
-    },
-  )
-  .await;
-
-  let base = format!("http://{}", server.addr);
-  let client = reqwest::Client::new();
-
-  // Enqueue an item requiring 8192 MB of VRAM.
-  let _enqueue = {
-    let client = client.clone();
-    let base = base.clone();
-    tokio::spawn(async move {
-      client
-        .post(format!("{base}/gpu"))
-        .json(&json!({ "vram_mb": 8192 }))
-        .send()
-        .await
-        .ok()
-    })
-  };
-
-  tokio::time::sleep(Duration::from_millis(100)).await;
-
-  // A worker with insufficient VRAM should see nothing.
-  let small_resp = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities {
-        scalars: HashMap::from([("vram_mb".to_string(), 4096.0)]),
-        ..Default::default()
-      },
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(small_resp.status(), 204, "insufficient scalar should get 204");
-
-  // A worker with enough VRAM should receive the item.
-  let big_resp = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities {
-        scalars: HashMap::from([("vram_mb".to_string(), 16384.0)]),
-        ..Default::default()
-      },
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(big_resp.status(), 200, "sufficient scalar should get item");
-}
-
-#[tokio::test]
-async fn multiple_items_are_dispatched_fifo() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
-  let base = format!("http://{}", server.addr);
-  let client = reqwest::Client::new();
-
-  // Enqueue two items in order.
-  for i in 0..2 {
-    let client = client.clone();
-    let base = base.clone();
-    tokio::spawn(async move {
-      client
-        .post(format!("{base}/test"))
-        .json(&json!({ "seq": i }))
-        .send()
-        .await
-        .ok()
-    });
-    // Small delay to guarantee ordering.
-    tokio::time::sleep(Duration::from_millis(50)).await;
-  }
-
-  tokio::time::sleep(Duration::from_millis(100)).await;
-
-  // First poll should get seq=0.
-  let first: QueueItem = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities::default(),
-    })
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-
-  assert_eq!(first.payload["seq"], 0, "first item should be seq 0");
-
-  // Second poll should get seq=1.
-  let second: QueueItem = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities::default(),
-    })
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-
-  assert_eq!(second.payload["seq"], 1, "second item should be seq 1");
-
-  // Third poll: queue is empty.
-  let empty = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities::default(),
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(empty.status(), 204, "queue should be empty after two polls");
-}
-
-#[tokio::test]
-async fn concurrent_polls_get_different_items() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
-  let base = format!("http://{}", server.addr);
-  let client = reqwest::Client::new();
-
-  // Enqueue two items.
-  for i in 0..2 {
-    let client = client.clone();
-    let base = base.clone();
-    tokio::spawn(async move {
-      client
-        .post(format!("{base}/test"))
-        .json(&json!({ "seq": i }))
-        .send()
-        .await
-        .ok()
-    });
-    tokio::time::sleep(Duration::from_millis(50)).await;
-  }
-
-  tokio::time::sleep(Duration::from_millis(100)).await;
-
-  // Two concurrent polls should each get a different item.
-  let (r1, r2) = tokio::join!(
-    client
-      .post(format!("{base}/api/work/poll"))
-      .json(&WorkPoll {
-        capabilities: WorkerCapabilities::default()
-      })
-      .send(),
-    client
-      .post(format!("{base}/api/work/poll"))
-      .json(&WorkPoll {
-        capabilities: WorkerCapabilities::default()
-      })
-      .send(),
-  );
-
-  let item1: QueueItem = r1.unwrap().json().await.unwrap();
-  let item2: QueueItem = r2.unwrap().json().await.unwrap();
-
-  assert_ne!(item1.id, item2.id, "concurrent polls should get different items");
-}
-
 // ── SSE tests ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn sse_connect_and_receive_work() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
+  let server = TestServer::start().await;
   let base = format!("http://{}", server.addr);
   let client = reqwest::Client::new();
 
@@ -612,6 +172,7 @@ async fn sse_connect_and_receive_work() {
     .json(&WorkerConnect {
       worker_id: "sse-worker-1".into(),
       capabilities: WorkerCapabilities::default(),
+      concurrency: None,
     })
     .send()
     .await
@@ -662,14 +223,14 @@ async fn sse_connect_and_receive_work() {
 
 #[tokio::test]
 async fn sse_duplicate_worker_id_rejected() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
+  let server = TestServer::start().await;
   let base = format!("http://{}", server.addr);
   let client = reqwest::Client::new();
 
   let body = WorkerConnect {
     worker_id: "dupe-worker".into(),
     capabilities: WorkerCapabilities::default(),
+    concurrency: None,
   };
 
   // First connection should succeed (keep it alive by holding the response).
@@ -696,13 +257,13 @@ async fn sse_duplicate_worker_id_rejected() {
 
 #[tokio::test]
 async fn sse_disconnect_allows_re_registration() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
+  let server = TestServer::start().await;
   let base = format!("http://{}", server.addr);
 
   let body = WorkerConnect {
     worker_id: "reconnect-worker".into(),
     capabilities: WorkerCapabilities::default(),
+    concurrency: None,
   };
 
   // Connect, start reading the stream, then drop it to force a disconnect.
@@ -745,8 +306,7 @@ async fn sse_disconnect_allows_re_registration() {
 
 #[tokio::test]
 async fn exclusive_pending_dispatched_on_connect() {
-  let nats = TestNats::acquire();
-  let server = TestServer::start(&nats.url).await;
+  let server = TestServer::start().await;
   let base = format!("http://{}", server.addr);
   let client = reqwest::Client::new();
 
@@ -772,6 +332,7 @@ async fn exclusive_pending_dispatched_on_connect() {
     .json(&WorkerConnect {
       worker_id: "late-worker".into(),
       capabilities: WorkerCapabilities::default(),
+      concurrency: None,
     })
     .send()
     .await
@@ -801,12 +362,11 @@ async fn exclusive_pending_dispatched_on_connect() {
 
 // ── Broadcast tests ───────────────────────────────────────────────────────────
 
-fn broadcast_config(nats_url: &str) -> Config {
+fn broadcast_config() -> Config {
   Config {
     log_level: LogLevel::Warn,
     log_format: LogFormat::Text,
     listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
-    nats_url: nats_url.to_string(),
     queues: HashMap::from([(
       "bcast".to_string(),
       QueueConfig {
@@ -825,9 +385,7 @@ fn broadcast_config(nats_url: &str) -> Config {
 
 #[tokio::test]
 async fn broadcast_all_workers_receive_item() {
-  let nats = TestNats::acquire();
-  let server =
-    TestServer::start_with(&nats.url, broadcast_config(&nats.url)).await;
+  let server = TestServer::start_with(broadcast_config()).await;
   let base = format!("http://{}", server.addr);
   let client = reqwest::Client::new();
 
@@ -837,6 +395,7 @@ async fn broadcast_all_workers_receive_item() {
     .json(&WorkerConnect {
       worker_id: "bw1".into(),
       capabilities: WorkerCapabilities::default(),
+      concurrency: None,
     })
     .send()
     .await
@@ -848,6 +407,7 @@ async fn broadcast_all_workers_receive_item() {
     .json(&WorkerConnect {
       worker_id: "bw2".into(),
       capabilities: WorkerCapabilities::default(),
+      concurrency: None,
     })
     .send()
     .await
@@ -916,14 +476,11 @@ async fn broadcast_all_workers_receive_item() {
 
 #[tokio::test]
 async fn broadcast_combiner_merges_responses() {
-  let nats = TestNats::acquire();
-
   // Use a combiner that collects all response values into an array.
   let config = Config {
     log_level: LogLevel::Warn,
     log_format: LogFormat::Text,
     listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
-    nats_url: nats.url.clone(),
     queues: HashMap::from([(
       "merge".to_string(),
       QueueConfig {
@@ -941,7 +498,7 @@ async fn broadcast_combiner_merges_responses() {
     )]),
   };
 
-  let server = TestServer::start_with(&nats.url, config).await;
+  let server = TestServer::start_with(config).await;
   let base = format!("http://{}", server.addr);
   let client = reqwest::Client::new();
 
@@ -951,6 +508,7 @@ async fn broadcast_combiner_merges_responses() {
     .json(&WorkerConnect {
       worker_id: "mw1".into(),
       capabilities: WorkerCapabilities::default(),
+      concurrency: None,
     })
     .send()
     .await
@@ -962,6 +520,7 @@ async fn broadcast_combiner_merges_responses() {
     .json(&WorkerConnect {
       worker_id: "mw2".into(),
       capabilities: WorkerCapabilities::default(),
+      concurrency: None,
     })
     .send()
     .await
@@ -1020,34 +579,41 @@ async fn broadcast_combiner_merges_responses() {
 
 #[tokio::test]
 async fn get_intake_uses_empty_payload() {
-  let nats = TestNats::acquire();
-
-  let server = TestServer::start_with(
-    &nats.url,
-    Config {
-      log_level: LogLevel::Warn,
-      log_format: LogFormat::Text,
-      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
-      nats_url: nats.url.clone(),
-      queues: HashMap::from([(
-        "get-queue".to_string(),
-        QueueConfig {
-          route: Some("/get-test".to_string()),
-          method: Some(Method::Get),
-          mode: QueueMode::Exclusive,
-          combiner: None,
-          extractors: vec![],
-          delegate_path: None,
-          delegate_method: None,
-          intake_timeout_secs: None,
-        },
-      )]),
-    },
-  )
+  let server = TestServer::start_with(Config {
+    log_level: LogLevel::Warn,
+    log_format: LogFormat::Text,
+    listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+    queues: HashMap::from([(
+      "get-queue".to_string(),
+      QueueConfig {
+        route: Some("/get-test".to_string()),
+        method: Some(Method::Get),
+        mode: QueueMode::Exclusive,
+        combiner: None,
+        extractors: vec![],
+        delegate_path: None,
+        delegate_method: None,
+        intake_timeout_secs: None,
+      },
+    )]),
+  })
   .await;
 
   let base = format!("http://{}", server.addr);
   let client = reqwest::Client::new();
+
+  // Connect a worker via SSE to receive the item.
+  let sse_resp = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "get-worker".into(),
+      capabilities: WorkerCapabilities::default(),
+      concurrency: None,
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut sse_stream = sse_resp.bytes_stream().eventsource();
 
   // GET /get-test — no body.
   let intake_handle = {
@@ -1058,20 +624,9 @@ async fn get_intake_uses_empty_payload() {
     })
   };
 
-  tokio::time::sleep(Duration::from_millis(100)).await;
-
-  // Poll — should get item with empty JSON object payload.
-  let poll_resp = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities::default(),
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(poll_resp.status(), 200, "expected item from poll");
-  let item: QueueItem = poll_resp.json().await.unwrap();
+  // Worker receives the item via SSE.
+  let event = next_sse_work_event(&mut sse_stream).await;
+  let item: QueueItem = serde_json::from_str(&event.data).unwrap();
   assert_eq!(
     item.payload,
     json!({}),
@@ -1098,35 +653,42 @@ async fn get_intake_uses_empty_payload() {
 }
 
 #[tokio::test]
-async fn delegation_hints_present_in_polled_item() {
-  let nats = TestNats::acquire();
-
-  let server = TestServer::start_with(
-    &nats.url,
-    Config {
-      log_level: LogLevel::Warn,
-      log_format: LogFormat::Text,
-      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
-      nats_url: nats.url.clone(),
-      queues: HashMap::from([(
-        "delegated".to_string(),
-        QueueConfig {
-          route: Some("/delegated".to_string()),
-          method: Some(Method::Get),
-          mode: QueueMode::Exclusive,
-          combiner: None,
-          extractors: vec![],
-          delegate_path: Some("/api/tags".to_string()),
-          delegate_method: Some(Method::Get),
-          intake_timeout_secs: None,
-        },
-      )]),
-    },
-  )
+async fn delegation_hints_present_in_dispatched_item() {
+  let server = TestServer::start_with(Config {
+    log_level: LogLevel::Warn,
+    log_format: LogFormat::Text,
+    listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+    queues: HashMap::from([(
+      "delegated".to_string(),
+      QueueConfig {
+        route: Some("/delegated".to_string()),
+        method: Some(Method::Get),
+        mode: QueueMode::Exclusive,
+        combiner: None,
+        extractors: vec![],
+        delegate_path: Some("/api/tags".to_string()),
+        delegate_method: Some(Method::Get),
+        intake_timeout_secs: None,
+      },
+    )]),
+  })
   .await;
 
   let base = format!("http://{}", server.addr);
   let client = reqwest::Client::new();
+
+  // Connect a worker via SSE.
+  let sse_resp = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "hint-worker".into(),
+      capabilities: WorkerCapabilities::default(),
+      concurrency: None,
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut sse_stream = sse_resp.bytes_stream().eventsource();
 
   // GET /delegated — no body.
   let intake_handle = {
@@ -1141,20 +703,9 @@ async fn delegation_hints_present_in_polled_item() {
     })
   };
 
-  tokio::time::sleep(Duration::from_millis(100)).await;
-
-  // Poll — should get item with delegation hints.
-  let poll_resp = client
-    .post(format!("{base}/api/work/poll"))
-    .json(&WorkPoll {
-      capabilities: WorkerCapabilities::default(),
-    })
-    .send()
-    .await
-    .unwrap();
-
-  assert_eq!(poll_resp.status(), 200);
-  let item: QueueItem = poll_resp.json().await.unwrap();
+  // Worker receives the item via SSE with delegation hints.
+  let event = next_sse_work_event(&mut sse_stream).await;
+  let item: QueueItem = serde_json::from_str(&event.data).unwrap();
   assert_eq!(
     item.delegate_path.as_deref(),
     Some("/api/tags"),
@@ -1184,36 +735,30 @@ async fn delegation_hints_present_in_polled_item() {
 
 #[tokio::test]
 async fn intake_timeout_returns_504() {
-  let nats = TestNats::acquire();
-
-  let server = TestServer::start_with(
-    &nats.url,
-    Config {
-      log_level: LogLevel::Warn,
-      log_format: LogFormat::Text,
-      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
-      nats_url: nats.url.clone(),
-      queues: HashMap::from([(
-        "timeout-queue".to_string(),
-        QueueConfig {
-          route: Some("/timeout-test".to_string()),
-          method: Some(Method::Post),
-          mode: QueueMode::Exclusive,
-          combiner: None,
-          extractors: vec![],
-          delegate_path: None,
-          delegate_method: None,
-          intake_timeout_secs: Some(1),
-        },
-      )]),
-    },
-  )
+  let server = TestServer::start_with(Config {
+    log_level: LogLevel::Warn,
+    log_format: LogFormat::Text,
+    listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+    queues: HashMap::from([(
+      "timeout-queue".to_string(),
+      QueueConfig {
+        route: Some("/timeout-test".to_string()),
+        method: Some(Method::Post),
+        mode: QueueMode::Exclusive,
+        combiner: None,
+        extractors: vec![],
+        delegate_path: None,
+        delegate_method: None,
+        intake_timeout_secs: Some(1),
+      },
+    )]),
+  })
   .await;
 
   let base = format!("http://{}", server.addr);
   let client = reqwest::Client::new();
 
-  // Enqueue an item but do NOT poll or respond — should timeout.
+  // Enqueue an item but do NOT respond — should timeout.
   let resp = client
     .post(format!("{base}/timeout-test"))
     .json(&json!({ "data": "will timeout" }))
@@ -1227,4 +772,260 @@ async fn intake_timeout_returns_504() {
     body["error"].as_str().unwrap().contains("timed out"),
     "error body should mention timeout"
   );
+}
+
+#[tokio::test]
+async fn sse_tag_requirement_matching() {
+  // Server with a queue that requires a model tag.
+  let server = TestServer::start_with(Config {
+    log_level: LogLevel::Warn,
+    log_format: LogFormat::Text,
+    listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+    queues: HashMap::from([(
+      "tagged".to_string(),
+      QueueConfig {
+        route: Some("/tagged".to_string()),
+        method: Some(Method::Post),
+        mode: QueueMode::Exclusive,
+        combiner: None,
+        extractors: vec![ExtractorConfig {
+          capability: "model".to_string(),
+          kind: ExtractorKind::Tag,
+          source: JqSource::Inline(".model".to_string()),
+        }],
+        delegate_path: None,
+        delegate_method: None,
+        intake_timeout_secs: None,
+      },
+    )]),
+  })
+  .await;
+
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Connect a worker with the wrong tag — should NOT receive item.
+  let sse_wrong = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "wrong-worker".into(),
+      capabilities: WorkerCapabilities {
+        tags: vec!["gemma2:9b".to_string()],
+        ..Default::default()
+      },
+      concurrency: None,
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut _stream_wrong = sse_wrong.bytes_stream().eventsource();
+
+  // Connect a worker with the correct tag.
+  let sse_right = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "right-worker".into(),
+      capabilities: WorkerCapabilities {
+        tags: vec!["llama3.2:8b".to_string()],
+        ..Default::default()
+      },
+      concurrency: None,
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut stream_right = sse_right.bytes_stream().eventsource();
+
+  tokio::time::sleep(Duration::from_millis(100)).await;
+
+  // Enqueue an item requiring "llama3.2:8b".
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client
+        .post(format!("{base}/tagged"))
+        .json(&json!({ "model": "llama3.2:8b" }))
+        .send()
+        .await
+        .unwrap()
+    })
+  };
+
+  // The right worker should receive it.
+  let event = next_sse_work_event(&mut stream_right).await;
+  let item: QueueItem = serde_json::from_str(&event.data).unwrap();
+  assert_eq!(item.payload["model"], "llama3.2:8b");
+
+  // Complete the item.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item.id,
+      worker_id: "right-worker".into(),
+      response: json!({ "done": true }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  let intake_resp = intake_handle.await.unwrap();
+  assert_eq!(intake_resp.status(), 200);
+}
+
+#[tokio::test]
+async fn sse_scalar_capability_matching() {
+  let server = TestServer::start_with(Config {
+    log_level: LogLevel::Warn,
+    log_format: LogFormat::Text,
+    listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+    queues: HashMap::from([(
+      "gpu".to_string(),
+      QueueConfig {
+        route: Some("/gpu".to_string()),
+        method: Some(Method::Post),
+        mode: QueueMode::Exclusive,
+        combiner: None,
+        extractors: vec![ExtractorConfig {
+          capability: "vram_mb".to_string(),
+          kind: ExtractorKind::Scalar,
+          source: JqSource::Inline(".vram_mb".to_string()),
+        }],
+        delegate_path: None,
+        delegate_method: None,
+        intake_timeout_secs: None,
+      },
+    )]),
+  })
+  .await;
+
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Connect a worker with sufficient VRAM.
+  let sse_resp = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "big-gpu".into(),
+      capabilities: WorkerCapabilities {
+        scalars: HashMap::from([("vram_mb".to_string(), 16384.0)]),
+        ..Default::default()
+      },
+      concurrency: None,
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut sse_stream = sse_resp.bytes_stream().eventsource();
+
+  tokio::time::sleep(Duration::from_millis(100)).await;
+
+  // Enqueue an item requiring 8192 MB of VRAM.
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client
+        .post(format!("{base}/gpu"))
+        .json(&json!({ "vram_mb": 8192 }))
+        .send()
+        .await
+        .unwrap()
+    })
+  };
+
+  // Worker should receive the item.
+  let event = next_sse_work_event(&mut sse_stream).await;
+  let item: QueueItem = serde_json::from_str(&event.data).unwrap();
+
+  // Complete the item.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item.id,
+      worker_id: "big-gpu".into(),
+      response: json!({ "done": true }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  let intake_resp = intake_handle.await.unwrap();
+  assert_eq!(intake_resp.status(), 200);
+}
+
+#[tokio::test]
+async fn exclusive_items_dispatched_fifo() {
+  let server = TestServer::start().await;
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Enqueue two items before any worker connects.
+  let mut intake_handles = vec![];
+  for i in 0..2 {
+    let client = client.clone();
+    let base = base.clone();
+    intake_handles.push(tokio::spawn(async move {
+      client
+        .post(format!("{base}/test"))
+        .json(&json!({ "seq": i }))
+        .send()
+        .await
+        .unwrap()
+    }));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+  }
+
+  tokio::time::sleep(Duration::from_millis(100)).await;
+
+  // Connect a worker — should get seq=0 first.
+  let sse_resp = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "fifo-worker".into(),
+      capabilities: WorkerCapabilities::default(),
+      concurrency: None,
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut sse_stream = sse_resp.bytes_stream().eventsource();
+
+  let ev1 = next_sse_work_event(&mut sse_stream).await;
+  let item1: QueueItem = serde_json::from_str(&ev1.data).unwrap();
+  assert_eq!(item1.payload["seq"], 0, "first item should be seq 0");
+
+  // Complete first item.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item1.id,
+      worker_id: "fifo-worker".into(),
+      response: json!({ "seq": 0 }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  // Should now get seq=1.
+  let ev2 = next_sse_work_event(&mut sse_stream).await;
+  let item2: QueueItem = serde_json::from_str(&ev2.data).unwrap();
+  assert_eq!(item2.payload["seq"], 1, "second item should be seq 1");
+
+  // Complete second item.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item2.id,
+      worker_id: "fifo-worker".into(),
+      response: json!({ "seq": 1 }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  for h in intake_handles {
+    let resp = h.await.unwrap();
+    assert_eq!(resp.status(), 200);
+  }
 }

@@ -78,7 +78,6 @@
       pkgs.pkg-config
       pkgs.openssl
       pkgs.jq
-      pkgs.nats-server
     ];
   in {
 

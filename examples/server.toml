@@ -8,7 +8,6 @@ log_format = "text"  # text | json
 
 [server]
 listen = "0.0.0.0:9090"
-nats_url = "nats://127.0.0.1:4222"
 
 # A queue for Ollama inference requests.  Incoming POST /api/generate payloads
 # are matched to workers by model tag and estimated VRAM requirement.

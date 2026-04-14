@@ -1,6 +1,5 @@
-use crate::config::QueueMode;
-use crate::dispatch::{dispatch_broadcast, dispatch_exclusive};
-use crate::state::AppState;
+use crate::dispatch::try_dispatch_all;
+use crate::state::{AppState, QueueEntry};
 use axum::{
   extract::{OriginalUri, State},
   http::StatusCode,
@@ -8,26 +7,11 @@ use axum::{
   Json,
 };
 use garage_queue_lib::protocol::QueueItem;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
-use thiserror::Error;
 use tokio::sync::oneshot;
 use tracing::{error, info};
 use uuid::Uuid;
-
-#[derive(Debug, Error)]
-enum NatsPersistError {
-  #[error("Failed to publish item to NATS subject '{subject}': {source}")]
-  Publish {
-    subject: String,
-    source: async_nats::jetstream::context::PublishError,
-  },
-
-  #[error("NATS acknowledgement failed for subject '{subject}': {source}")]
-  Ack {
-    subject: String,
-    source: async_nats::jetstream::context::PublishError,
-  },
-}
 
 /// Intake endpoint for configured queue routes.
 ///
@@ -137,27 +121,25 @@ pub async fn handle_intake(
       "Enqueuing item",
   );
 
-  if let Err(e) = persist_to_nats(&state, &item).await {
-    error!(item_id = %item.id, error = %e, "Failed to persist item to NATS");
-    return (
-      StatusCode::INTERNAL_SERVER_ERROR,
-      Json(serde_json::json!({ "error": "failed to enqueue item" })),
-    )
-      .into_response();
-  }
-
   let (tx, rx) = oneshot::channel::<serde_json::Value>();
 
   let item_id = item.id;
 
-  match mode {
-    QueueMode::Exclusive => {
-      dispatch_exclusive(&state, item, tx).await;
-    }
-    QueueMode::Broadcast => {
-      dispatch_broadcast(&state, item, tx).await;
-    }
+  // Insert into the unified queue.
+  {
+    let entry = QueueEntry {
+      item,
+      mode,
+      delivered: HashSet::new(),
+      completed: HashMap::new(),
+      producer_tx: Some(tx),
+    };
+    let mut queue = state.queue.lock().await;
+    queue.insert(item_id, entry);
   }
+
+  // Try to dispatch to all ready workers.
+  try_dispatch_all(&state).await;
 
   let result = match intake_timeout_secs {
     Some(t) => match tokio::time::timeout(Duration::from_secs(t), rx).await {
@@ -169,6 +151,8 @@ pub async fn handle_intake(
           timeout_secs = t,
           "Intake request timed out waiting for worker response",
         );
+        // Clean up the queue entry on timeout.
+        state.queue.lock().await.shift_remove(&item_id);
         return (
           StatusCode::GATEWAY_TIMEOUT,
           Json(serde_json::json!({
@@ -190,24 +174,4 @@ pub async fn handle_intake(
       StatusCode::SERVICE_UNAVAILABLE.into_response()
     }
   }
-}
-
-async fn persist_to_nats(
-  state: &AppState,
-  item: &QueueItem,
-) -> Result<(), NatsPersistError> {
-  let subject = format!("items.{}", item.queue);
-  // QueueItem derives Serialize; serialisation failure here is a logic bug.
-  let payload = serde_json::to_vec(item).expect("QueueItem derives Serialize");
-  state
-    .jetstream
-    .publish(subject.clone(), payload.into())
-    .await
-    .map_err(|source| NatsPersistError::Publish {
-      subject: subject.clone(),
-      source,
-    })?
-    .await
-    .map_err(|source| NatsPersistError::Ack { subject, source })?;
-  Ok(())
 }

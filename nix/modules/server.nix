@@ -5,7 +5,6 @@
 #
 #   services.garage-queue-server = {
 #     enable = true;
-#     settings.server.nats_url = "nats://localhost:4222";
 #   };
 #
 # To use TCP instead:
@@ -15,7 +14,6 @@
 #     socket = null;
 #     host   = "0.0.0.0";
 #     port   = 9090;
-#     settings.server.nats_url = "nats://localhost:4222";
 #   };
 #
 # To reference the socket from a reverse proxy (e.g. nginx):
@@ -94,19 +92,6 @@ in
       description = "TCP port to listen on.  Ignored when socket is set.";
     };
 
-    nats = {
-      enable = lib.mkOption {
-        type = lib.types.bool;
-        default = false;
-        description = ''
-          Start a local NATS server with JetStream for the queue.  When true,
-          services.nats is configured with JetStream enabled.  All tuning
-          (storage limits, clustering, etc.) is left to the operator via
-          services.nats.
-        '';
-      };
-    };
-
     # The settings attrset is converted to TOML and passed to the server via
     # --config.  Its structure mirrors the server config.toml directly, so any
     # field accepted by the server can be set here.  The server.listen key is
@@ -120,9 +105,6 @@ in
         source tree for the full reference.  Do not set server.listen here;
         use the socket, host, and port options instead.  Queue definitions
         should use the queues option rather than settings.queues.
-      '';
-      example = lib.literalExpression ''
-        { server.nats_url = "nats://localhost:4222"; }
       '';
     };
 
@@ -156,12 +138,6 @@ in
 
     users.groups.${cfg.group} = lib.mkDefault { };
 
-    # Only JetStream is required; all tuning is left to the operator.
-    services.nats = lib.mkIf cfg.nats.enable {
-      enable = true;
-      jetstream = true;
-    };
-
     # Create the socket directory before the socket unit tries to bind.
     systemd.tmpfiles.rules = lib.mkIf (cfg.socket != null) [
       "d ${dirOf cfg.socket} 0750 ${cfg.user} ${cfg.group} -"
@@ -187,10 +163,8 @@ in
       description = "garage-queue server";
       wantedBy = [ "multi-user.target" ];
       after = [ "network-online.target" ]
-        ++ lib.optional cfg.nats.enable "nats.service"
         ++ lib.optional (cfg.socket != null) "garage-queue-server.socket";
-      wants = [ "network-online.target" ]
-        ++ lib.optional cfg.nats.enable "nats.service";
+      wants = [ "network-online.target" ];
       requires =
         lib.optional (cfg.socket != null) "garage-queue-server.socket";
 

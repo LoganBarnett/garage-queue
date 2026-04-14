@@ -32,7 +32,7 @@ futures-util = { workspace = true }
 sd-notify = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
-async-nats = { workspace = true }
+indexmap = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

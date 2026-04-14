@@ -1,6 +1,5 @@
 use garage_queue_lib::capability::WorkerCapabilities;
-use garage_queue_lib::matching::satisfies;
-use garage_queue_lib::protocol::QueueItem;
+use garage_queue_lib::protocol::{ConcurrencyConfig, QueueItem};
 use std::collections::HashMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -15,8 +14,29 @@ pub struct AlreadyRegistered {
 pub struct ConnectedWorker {
   pub worker_id: String,
   pub capabilities: WorkerCapabilities,
-  pub busy: bool,
+  pub concurrency: ConcurrencyConfig,
+  /// Number of items currently in-flight (delivered but not completed) per queue.
+  pub in_flight: HashMap<String, usize>,
   pub tx: mpsc::Sender<QueueItem>,
+}
+
+impl ConnectedWorker {
+  /// Returns true if the worker has a free concurrency slot for the given queue.
+  pub fn is_ready_for(&self, queue_name: &str) -> bool {
+    let current = self.in_flight.get(queue_name).copied().unwrap_or(0);
+    let limit = self.concurrency.limit_for(queue_name) as usize;
+    current < limit
+  }
+
+  pub fn increment_in_flight(&mut self, queue_name: &str) {
+    *self.in_flight.entry(queue_name.to_string()).or_insert(0) += 1;
+  }
+
+  pub fn decrement_in_flight(&mut self, queue_name: &str) {
+    if let Some(count) = self.in_flight.get_mut(queue_name) {
+      *count = count.saturating_sub(1);
+    }
+  }
 }
 
 /// Tracks all workers with active SSE connections.
@@ -35,6 +55,7 @@ impl WorkerRegistry {
     &mut self,
     worker_id: String,
     capabilities: WorkerCapabilities,
+    concurrency: ConcurrencyConfig,
     tx: mpsc::Sender<QueueItem>,
   ) -> Result<(), AlreadyRegistered> {
     if self.workers.contains_key(&worker_id) {
@@ -47,7 +68,8 @@ impl WorkerRegistry {
       ConnectedWorker {
         worker_id,
         capabilities,
-        busy: false,
+        concurrency,
+        in_flight: HashMap::new(),
         tx,
       },
     );
@@ -58,40 +80,32 @@ impl WorkerRegistry {
     self.workers.remove(worker_id);
   }
 
-  pub fn mark_busy(&mut self, worker_id: &str) {
-    if let Some(w) = self.workers.get_mut(worker_id) {
-      w.busy = true;
-    }
+  pub fn get(&self, worker_id: &str) -> Option<&ConnectedWorker> {
+    self.workers.get(worker_id)
   }
 
-  pub fn mark_idle(&mut self, worker_id: &str) {
-    if let Some(w) = self.workers.get_mut(worker_id) {
-      w.busy = false;
-    }
+  pub fn get_mut(&mut self, worker_id: &str) -> Option<&mut ConnectedWorker> {
+    self.workers.get_mut(worker_id)
   }
 
-  /// Returns idle workers whose capabilities satisfy the given requirements.
-  pub fn idle_workers_matching(
+  /// Returns all connected worker IDs.
+  pub fn worker_ids(&self) -> Vec<String> {
+    self.workers.keys().cloned().collect()
+  }
+
+  /// Returns IDs of all connected workers whose capabilities satisfy the
+  /// given requirements.
+  pub fn matching_worker_ids(
     &self,
     requirements: &[garage_queue_lib::capability::CapabilityRequirement],
-  ) -> Vec<&ConnectedWorker> {
+  ) -> Vec<String> {
     self
       .workers
       .values()
-      .filter(|w| !w.busy && satisfies(requirements, &w.capabilities))
-      .collect()
-  }
-
-  /// Returns all workers (regardless of busy state) whose capabilities
-  /// satisfy the given requirements.
-  pub fn all_workers_matching(
-    &self,
-    requirements: &[garage_queue_lib::capability::CapabilityRequirement],
-  ) -> Vec<&ConnectedWorker> {
-    self
-      .workers
-      .values()
-      .filter(|w| satisfies(requirements, &w.capabilities))
+      .filter(|w| {
+        garage_queue_lib::matching::satisfies(requirements, &w.capabilities)
+      })
+      .map(|w| w.worker_id.clone())
       .collect()
   }
 }
@@ -115,42 +129,74 @@ mod tests {
   #[test]
   fn register_and_deregister() {
     let mut reg = WorkerRegistry::new();
-    reg.register("w1".into(), caps(&[]), channel()).unwrap();
-    assert_eq!(reg.workers.len(), 1);
+    reg
+      .register("w1".into(), caps(&[]), ConcurrencyConfig::default(), channel())
+      .unwrap();
+    assert!(reg.get("w1").is_some());
     reg.deregister("w1");
-    assert_eq!(reg.workers.len(), 0);
+    assert!(reg.get("w1").is_none());
   }
 
   #[test]
   fn duplicate_registration_rejected() {
     let mut reg = WorkerRegistry::new();
-    reg.register("w1".into(), caps(&[]), channel()).unwrap();
-    let err = reg.register("w1".into(), caps(&[]), channel()).unwrap_err();
+    reg
+      .register("w1".into(), caps(&[]), ConcurrencyConfig::default(), channel())
+      .unwrap();
+    let err = reg
+      .register("w1".into(), caps(&[]), ConcurrencyConfig::default(), channel())
+      .unwrap_err();
     assert_eq!(err.worker_id, "w1");
   }
 
   #[test]
-  fn idle_workers_matching_respects_busy() {
+  fn is_ready_for_respects_concurrency() {
     let mut reg = WorkerRegistry::new();
-    reg.register("w1".into(), caps(&["a"]), channel()).unwrap();
-    reg.register("w2".into(), caps(&["a"]), channel()).unwrap();
+    reg
+      .register(
+        "w1".into(),
+        caps(&[]),
+        ConcurrencyConfig {
+          default: 2,
+          overrides: HashMap::new(),
+        },
+        channel(),
+      )
+      .unwrap();
 
-    reg.mark_busy("w1");
+    let worker = reg.get("w1").unwrap();
+    assert!(worker.is_ready_for("test"));
 
-    let idle = reg.idle_workers_matching(&[]);
-    assert_eq!(idle.len(), 1);
-    assert_eq!(idle[0].worker_id, "w2");
+    let worker = reg.get_mut("w1").unwrap();
+    worker.increment_in_flight("test");
+    worker.increment_in_flight("test");
+    assert!(!worker.is_ready_for("test"));
+
+    worker.decrement_in_flight("test");
+    assert!(worker.is_ready_for("test"));
   }
 
   #[test]
-  fn all_workers_matching_ignores_busy() {
+  fn concurrency_overrides_per_queue() {
     let mut reg = WorkerRegistry::new();
-    reg.register("w1".into(), caps(&["a"]), channel()).unwrap();
-    reg.register("w2".into(), caps(&["a"]), channel()).unwrap();
+    let mut overrides = HashMap::new();
+    overrides.insert("fast-queue".to_string(), 4);
+    reg
+      .register(
+        "w1".into(),
+        caps(&[]),
+        ConcurrencyConfig {
+          default: 1,
+          overrides,
+        },
+        channel(),
+      )
+      .unwrap();
 
-    reg.mark_busy("w1");
-
-    let all = reg.all_workers_matching(&[]);
-    assert_eq!(all.len(), 2);
+    let worker = reg.get("w1").unwrap();
+    // default queue: limit 1
+    assert!(worker.is_ready_for("default-queue"));
+    // fast-queue: limit 4
+    assert!(worker.is_ready_for("fast-queue"));
   }
 }

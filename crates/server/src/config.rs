@@ -82,7 +82,6 @@ pub struct ConfigFileRaw {
 #[derive(Debug, Deserialize)]
 pub struct ServerSectionRaw {
   pub listen: Option<String>,
-  pub nats_url: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default, Clone, Copy)]
@@ -177,7 +176,6 @@ pub struct Config {
   pub log_level: LogLevel,
   pub log_format: LogFormat,
   pub listen_address: ListenerAddress,
-  pub nats_url: String,
   pub queues: HashMap<String, QueueConfig>,
 }
 
@@ -259,10 +257,9 @@ impl Config {
       .parse::<LogFormat>()
       .map_err(|e| ConfigError::Validation(e.to_string()))?;
 
-    let server = file.server.unwrap_or_else(|| ServerSectionRaw {
-      listen: None,
-      nats_url: None,
-    });
+    let server = file
+      .server
+      .unwrap_or_else(|| ServerSectionRaw { listen: None });
 
     let listen_str = server
       .listen
@@ -274,10 +271,6 @@ impl Config {
           reason,
         }
       })?;
-
-    let nats_url = server
-      .nats_url
-      .unwrap_or_else(|| "nats://127.0.0.1:4222".to_string());
 
     let queues = file
       .queues
@@ -291,7 +284,6 @@ impl Config {
       log_level,
       log_format,
       listen_address,
-      nats_url,
       queues,
     })
   }
@@ -458,7 +450,6 @@ mod tests {
 
     assert!(matches!(config.log_level, LogLevel::Info));
     assert!(matches!(config.log_format, LogFormat::Text));
-    assert_eq!(config.nats_url, "nats://127.0.0.1:4222");
     assert!(config.queues.is_empty());
   }
 

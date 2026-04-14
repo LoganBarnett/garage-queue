@@ -23,12 +23,6 @@ enum ApplicationError {
   #[error("Failed to build queue extractor for queue '{queue}': {source}")]
   ExtractorBuild { queue: String, source: IntakeError },
 
-  #[error("Failed to connect to NATS at '{url}': {message}")]
-  NatsConnect { url: String, message: String },
-
-  #[error("Failed to create or verify NATS stream: {0}")]
-  NatsStream(String),
-
   #[error("Failed to bind listener to '{address}': {source}")]
   ListenerBind {
     address: String,
@@ -51,28 +45,8 @@ async fn main() -> Result<(), ApplicationError> {
   let compiled_queues = build_compiled_queues(&config)?;
   info!(queues = %compiled_queues.len(), "Queue extractors compiled");
 
-  let nats = async_nats::connect(&config.nats_url).await.map_err(|e| {
-    ApplicationError::NatsConnect {
-      url: config.nats_url.clone(),
-      message: e.to_string(),
-    }
-  })?;
-
-  let jetstream = async_nats::jetstream::new(nats);
-
-  jetstream
-    .get_or_create_stream(async_nats::jetstream::stream::Config {
-      name: "GARAGE_QUEUE_ITEMS".to_string(),
-      subjects: vec!["items.>".to_string()],
-      ..Default::default()
-    })
-    .await
-    .map_err(|e| ApplicationError::NatsStream(e.to_string()))?;
-
-  info!("Connected to NATS and stream ready");
-
   let config = Arc::new(config);
-  let state = AppState::new(Arc::clone(&config), jetstream, compiled_queues);
+  let state = AppState::new(Arc::clone(&config), compiled_queues);
 
   let app = build_router(state, &config);
 

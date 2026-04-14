@@ -1,5 +1,6 @@
 use crate::capability::{CapabilityRequirement, WorkerCapabilities};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// An item stored in the queue awaiting processing.
@@ -28,17 +29,43 @@ pub struct QueueItem {
   pub delegate_method: Option<String>,
 }
 
+/// Per-queue concurrency limits advertised by a worker at connect time.
+///
+/// The `default` field sets the concurrency for any queue not listed in
+/// `overrides`.  Workers without this field default to sequential processing
+/// (concurrency 1 everywhere).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConcurrencyConfig {
+  pub default: u32,
+  #[serde(default)]
+  pub overrides: HashMap<String, u32>,
+}
+
+impl ConcurrencyConfig {
+  /// Return the concurrency limit for a given queue name.
+  pub fn limit_for(&self, queue: &str) -> u32 {
+    self.overrides.get(queue).copied().unwrap_or(self.default)
+  }
+}
+
+impl Default for ConcurrencyConfig {
+  fn default() -> Self {
+    Self {
+      default: 1,
+      overrides: HashMap::new(),
+    }
+  }
+}
+
 /// Body sent by a worker when establishing an SSE connection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkerConnect {
   pub worker_id: String,
   pub capabilities: WorkerCapabilities,
-}
-
-/// Body of a worker's request for a new work item.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WorkPoll {
-  pub capabilities: WorkerCapabilities,
+  /// Per-queue concurrency limits.  When absent the worker defaults to
+  /// sequential processing (concurrency 1 on all queues).
+  #[serde(default)]
+  pub concurrency: Option<ConcurrencyConfig>,
 }
 
 /// Body of a worker's result submission.
@@ -52,14 +79,4 @@ pub struct WorkResult {
 
   /// The response from the delegator, returned verbatim to the producer.
   pub response: serde_json::Value,
-}
-
-/// Server response to a WorkPoll.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum WorkPollResponse {
-  /// A matching item is available.
-  Item(QueueItem),
-  /// No matching item is currently available; worker should retry later.
-  Empty,
 }

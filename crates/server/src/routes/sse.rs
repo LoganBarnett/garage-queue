@@ -1,4 +1,4 @@
-use crate::dispatch::{handle_broadcast_disconnect, try_dispatch_pending};
+use crate::dispatch::{handle_disconnect, try_dispatch};
 use crate::state::AppState;
 use axum::{
   extract::State,
@@ -9,7 +9,7 @@ use axum::{
   },
   Json,
 };
-use garage_queue_lib::protocol::{QueueItem, WorkerConnect};
+use garage_queue_lib::protocol::{ConcurrencyConfig, QueueItem, WorkerConnect};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::sync::mpsc;
@@ -20,18 +20,24 @@ use tracing::{info, warn};
 ///
 /// Workers establish an SSE connection by posting their identity and
 /// capabilities.  The server registers them in the worker registry and
-/// pushes work items as SSE events on the returned stream.
+/// pushes work items as SSE events on the returned stream.  The worker's
+/// concurrency config controls how many items may be in-flight at once.
 pub async fn connect(
   State(state): State<AppState>,
   Json(body): Json<WorkerConnect>,
 ) -> impl IntoResponse {
   let (tx, rx) = mpsc::channel::<QueueItem>(32);
 
+  let concurrency = body.concurrency.unwrap_or_else(ConcurrencyConfig::default);
+
   {
     let mut registry = state.registry.lock().await;
-    if let Err(e) =
-      registry.register(body.worker_id.clone(), body.capabilities.clone(), tx)
-    {
+    if let Err(e) = registry.register(
+      body.worker_id.clone(),
+      body.capabilities.clone(),
+      concurrency,
+      tx,
+    ) {
       warn!(worker_id = %e.worker_id, "Duplicate worker registration");
       return (
         StatusCode::CONFLICT,
@@ -49,11 +55,11 @@ pub async fn connect(
     "Worker connected via SSE"
   );
 
-  // Check pending queue for items this worker can handle.
+  // Check queue for items this worker can handle.
   let worker_id = body.worker_id.clone();
   let dispatch_state = state.clone();
   tokio::spawn(async move {
-    try_dispatch_pending(&dispatch_state, &worker_id).await;
+    try_dispatch(&dispatch_state, &worker_id).await;
   });
 
   let inner = ReceiverStream::new(rx);
@@ -117,7 +123,7 @@ impl Drop for CleanupStream {
           "Worker disconnected, deregistered"
         );
 
-        handle_broadcast_disconnect(&state, &worker_id).await;
+        handle_disconnect(&state, &worker_id).await;
       });
     }
   }

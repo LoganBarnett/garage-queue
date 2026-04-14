@@ -49,8 +49,8 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 # HTTP client (worker delegator, SSE stream support)
 reqwest = { version = "0.12", features = ["json", "stream"] }
 
-# NATS messaging
-async-nats = "0.37"
+# Ordered map (FIFO iteration with O(1) lookup by key)
+indexmap = "2"
 
 # jq expression evaluation
 jaq-core = "2"

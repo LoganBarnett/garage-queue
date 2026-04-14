@@ -153,6 +153,7 @@ impl TestServer {
             extractors: vec![],
             delegate_path: None,
             delegate_method: None,
+            intake_timeout_secs: None,
           },
         )]),
       },
@@ -343,6 +344,7 @@ async fn poll_skips_items_with_unmet_tag_requirement() {
           }],
           delegate_path: None,
           delegate_method: None,
+          intake_timeout_secs: None,
         },
       )]),
     },
@@ -424,6 +426,7 @@ async fn poll_matches_scalar_capability() {
           }],
           delegate_path: None,
           delegate_method: None,
+          intake_timeout_secs: None,
         },
       )]),
     },
@@ -814,6 +817,7 @@ fn broadcast_config(nats_url: &str) -> Config {
         extractors: vec![],
         delegate_path: None,
         delegate_method: None,
+        intake_timeout_secs: None,
       },
     )]),
   }
@@ -932,6 +936,7 @@ async fn broadcast_combiner_merges_responses() {
         extractors: vec![],
         delegate_path: None,
         delegate_method: None,
+        intake_timeout_secs: None,
       },
     )]),
   };
@@ -1034,6 +1039,7 @@ async fn get_intake_uses_empty_payload() {
           extractors: vec![],
           delegate_path: None,
           delegate_method: None,
+          intake_timeout_secs: None,
         },
       )]),
     },
@@ -1112,6 +1118,7 @@ async fn delegation_hints_present_in_polled_item() {
           extractors: vec![],
           delegate_path: Some("/api/tags".to_string()),
           delegate_method: Some(Method::Get),
+          intake_timeout_secs: None,
         },
       )]),
     },
@@ -1173,4 +1180,51 @@ async fn delegation_hints_present_in_polled_item() {
 
   let intake_resp = intake_handle.await.unwrap();
   assert_eq!(intake_resp.status(), 200);
+}
+
+#[tokio::test]
+async fn intake_timeout_returns_504() {
+  let nats = TestNats::acquire();
+
+  let server = TestServer::start_with(
+    &nats.url,
+    Config {
+      log_level: LogLevel::Warn,
+      log_format: LogFormat::Text,
+      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+      nats_url: nats.url.clone(),
+      queues: HashMap::from([(
+        "timeout-queue".to_string(),
+        QueueConfig {
+          route: Some("/timeout-test".to_string()),
+          method: Some(Method::Post),
+          mode: QueueMode::Exclusive,
+          combiner: None,
+          extractors: vec![],
+          delegate_path: None,
+          delegate_method: None,
+          intake_timeout_secs: Some(1),
+        },
+      )]),
+    },
+  )
+  .await;
+
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Enqueue an item but do NOT poll or respond — should timeout.
+  let resp = client
+    .post(format!("{base}/timeout-test"))
+    .json(&json!({ "data": "will timeout" }))
+    .send()
+    .await
+    .unwrap();
+
+  assert_eq!(resp.status(), 504, "expected 504 Gateway Timeout");
+  let body: serde_json::Value = resp.json().await.unwrap();
+  assert!(
+    body["error"].as_str().unwrap().contains("timed out"),
+    "error body should mention timeout"
+  );
 }

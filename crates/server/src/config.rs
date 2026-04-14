@@ -130,6 +130,11 @@ pub struct QueueConfigRaw {
   /// Optional HTTP method hint for workers delegating items from this queue.
   pub delegate_method: Option<MethodRaw>,
 
+  /// Optional timeout in seconds for intake requests waiting on worker
+  /// responses.  When set, the server returns 504 if no result arrives
+  /// within this duration.
+  pub intake_timeout_secs: Option<u64>,
+
   #[serde(default)]
   pub extractors: HashMap<String, ExtractorConfigRaw>,
 }
@@ -204,6 +209,8 @@ pub struct QueueConfig {
   pub delegate_path: Option<String>,
   /// Optional HTTP method hint (lowercase string) for workers.
   pub delegate_method: Option<Method>,
+  /// Optional timeout in seconds for intake requests awaiting worker results.
+  pub intake_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -370,6 +377,7 @@ fn validate_queue_config(
     extractors,
     delegate_path: raw.delegate_path,
     delegate_method,
+    intake_timeout_secs: raw.intake_timeout_secs,
   })
 }
 
@@ -598,6 +606,27 @@ delegate_path = "/custom"
     let q = &config.queues["test"];
     assert_eq!(q.delegate_path.as_deref(), Some("/custom"));
     assert!(q.delegate_method.is_none());
+  }
+
+  #[test]
+  fn intake_timeout_secs_is_parsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("timeout.toml");
+    std::fs::write(
+      &path,
+      r#"
+[queues.test]
+route = "/test"
+method = "post"
+intake_timeout_secs = 30
+"#,
+    )
+    .unwrap();
+
+    let cli = cli_with_config(path.to_str().unwrap());
+    let config = Config::from_cli_and_file(cli).unwrap();
+    let q = &config.queues["test"];
+    assert_eq!(q.intake_timeout_secs, Some(30));
   }
 
   #[test]

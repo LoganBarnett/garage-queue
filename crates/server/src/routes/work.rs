@@ -76,12 +76,14 @@ pub async fn result(
       entry
         .responses
         .push((body.worker_id.clone(), body.response));
-      let done = entry.remaining.is_empty();
+      let remaining = entry.remaining.len();
+      let done = remaining == 0;
       drop(bp);
 
       info!(
         item_id = %body.item_id,
         worker_id = %body.worker_id,
+        remaining = remaining,
         "Broadcast response recorded"
       );
 

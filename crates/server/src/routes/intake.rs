@@ -8,6 +8,7 @@ use axum::{
   Json,
 };
 use garage_queue_lib::protocol::QueueItem;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::oneshot;
 use tracing::{error, info};
@@ -44,7 +45,14 @@ pub async fn handle_intake(
     .unwrap_or_else(|| serde_json::json!({}));
   let path = uri.path().to_string();
 
-  let (queue_name, requirements, mode, delegate_path, delegate_method) = {
+  let (
+    queue_name,
+    requirements,
+    mode,
+    delegate_path,
+    delegate_method,
+    intake_timeout_secs,
+  ) = {
     let live = state.live.read().await;
 
     let queue_name = live
@@ -100,8 +108,16 @@ pub async fn handle_intake(
       crate::config::Method::Patch => "patch".to_string(),
       crate::config::Method::Delete => "delete".to_string(),
     });
+    let intake_timeout_secs = queue_cfg.intake_timeout_secs;
 
-    (queue_name, requirements, mode, delegate_path, delegate_method)
+    (
+      queue_name,
+      requirements,
+      mode,
+      delegate_path,
+      delegate_method,
+      intake_timeout_secs,
+    )
   };
 
   let item = QueueItem {
@@ -132,6 +148,8 @@ pub async fn handle_intake(
 
   let (tx, rx) = oneshot::channel::<serde_json::Value>();
 
+  let item_id = item.id;
+
   match mode {
     QueueMode::Exclusive => {
       dispatch_exclusive(&state, item, tx).await;
@@ -141,7 +159,31 @@ pub async fn handle_intake(
     }
   }
 
-  match rx.await {
+  let result = match intake_timeout_secs {
+    Some(t) => match tokio::time::timeout(Duration::from_secs(t), rx).await {
+      Ok(inner) => inner,
+      Err(_) => {
+        error!(
+          item_id = %item_id,
+          queue = %queue_name,
+          timeout_secs = t,
+          "Intake request timed out waiting for worker response",
+        );
+        return (
+          StatusCode::GATEWAY_TIMEOUT,
+          Json(serde_json::json!({
+            "error": format!(
+              "timed out after {t}s waiting for worker response on queue '{queue_name}'"
+            )
+          })),
+        )
+          .into_response();
+      }
+    },
+    None => rx.await,
+  };
+
+  match result {
     Ok(response) => Json(response).into_response(),
     Err(_) => {
       error!("Response channel closed before result arrived");

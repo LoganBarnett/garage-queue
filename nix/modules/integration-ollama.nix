@@ -21,5 +21,6 @@ name: {
     combiner_jq_exp = "{ models: [.[] | .response.models] | add | unique_by(.name) }";
     delegate_path = "/api/tags";
     delegate_method = "get";
+    intake_timeout_secs = 30;
   };
 }

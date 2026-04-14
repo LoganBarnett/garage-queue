@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Take 02, Variant 04: Color-coded wires matching shapes, large teal door, 02-palette -->
+
+  <!-- Input line -->
+  <line x1="12" y1="128" x2="72" y2="128" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="12" y1="128" x2="72" y2="128" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Garage body -->
+  <rect x="72" y="92" width="56" height="72" rx="3" stroke="#fff" stroke-width="7" fill="none" stroke-linejoin="round"/>
+  <rect x="72" y="92" width="56" height="72" rx="3" fill="#7c3aed" stroke="#6d28d9" stroke-width="3"/>
+
+  <!-- Large teal door -->
+  <rect x="80" y="106" width="40" height="58" rx="3" fill="#14b8a6" stroke="#0d9488" stroke-width="2.5"/>
+  <line x1="80" y1="120" x2="120" y2="120" stroke="#0d9488" stroke-width="1.5"/>
+  <line x1="80" y1="134" x2="120" y2="134" stroke="#0d9488" stroke-width="1.5"/>
+  <line x1="80" y1="148" x2="120" y2="148" stroke="#0d9488" stroke-width="1.5"/>
+
+  <!-- Fork line to triangle: coral-colored -->
+  <line x1="128" y1="108" x2="168" y2="60" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="108" x2="168" y2="60" stroke="#fb7185" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Fork line to circle: sky-blue-colored -->
+  <line x1="128" y1="128" x2="178" y2="128" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="128" x2="178" y2="128" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Fork line to square: emerald-colored -->
+  <line x1="128" y1="148" x2="168" y2="196" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="148" x2="168" y2="196" stroke="#34d399" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Triangle: coral -->
+  <polygon points="196,30 226,78 166,78" stroke="#fff" stroke-width="7" fill="none" stroke-linejoin="round"/>
+  <polygon points="196,30 226,78 166,78" fill="#fb7185" stroke="#e11d48" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Circle: sky blue -->
+  <circle cx="208" cy="128" r="28" stroke="#fff" stroke-width="7" fill="none"/>
+  <circle cx="208" cy="128" r="28" fill="#38bdf8" stroke="#0284c7" stroke-width="3"/>
+
+  <!-- Square: emerald -->
+  <rect x="168" y="170" width="56" height="56" rx="4" stroke="#fff" stroke-width="7" fill="none"/>
+  <rect x="168" y="170" width="56" height="56" rx="4" fill="#34d399" stroke="#059669" stroke-width="3"/>
+</svg>

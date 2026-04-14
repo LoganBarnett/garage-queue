@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Outline/background-proof stroke on all elements -->
+  <defs>
+    <style>
+      .line { stroke: #4a4a4a; stroke-width: 3; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .outline { stroke: #ffffff; stroke-width: 6; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .garage-outline { stroke: #ffffff; stroke-width: 6; fill: none; stroke-linejoin: round; stroke-linecap: round; }
+      .garage-fill { fill: #4a4a4a; stroke: none; }
+    </style>
+  </defs>
+
+  <!-- === Input line (left edge to garage) === -->
+  <!-- White outline pass -->
+  <line x1="16" y1="128" x2="80" y2="128" class="outline"/>
+  <!-- Dark stroke pass -->
+  <line x1="16" y1="128" x2="80" y2="128" class="line"/>
+
+  <!-- === Garage icon (simplified: rectangular body + peaked roof + door opening) === -->
+  <!-- White outline passes -->
+  <path d="M80,148 L80,108 L104,88 L128,108 L128,148 Z" class="garage-outline"/>
+  <rect x="94" y="122" width="20" height="26" rx="2" stroke="#ffffff" stroke-width="6" fill="none"/>
+  <!-- Fill passes -->
+  <path d="M80,148 L80,108 L104,88 L128,108 L128,148 Z" class="garage-fill"/>
+  <rect x="94" y="122" width="20" height="26" rx="2" fill="#6b6b6b" stroke="none"/>
+  <!-- Visible stroke passes -->
+  <path d="M80,148 L80,108 L104,88 L128,108 L128,148 Z" stroke="#4a4a4a" stroke-width="3" fill="none" stroke-linejoin="round"/>
+  <rect x="94" y="122" width="20" height="26" rx="2" stroke="#4a4a4a" stroke-width="2.5" fill="none"/>
+
+  <!-- === Fork lines from garage to three output nodes === -->
+  <!-- Top fork: garage -> triangle -->
+  <path d="M128,118 L168,68" class="outline"/>
+  <path d="M128,118 L168,68" class="line"/>
+
+  <!-- Middle fork: garage -> circle -->
+  <path d="M128,128 L180,128" class="outline"/>
+  <path d="M128,128 L180,128" class="line"/>
+
+  <!-- Bottom fork: garage -> square -->
+  <path d="M128,138 L168,188" class="outline"/>
+  <path d="M128,138 L168,188" class="line"/>
+
+  <!-- === Output node: Triangle (top-right) === -->
+  <!-- Orange/amber triangle -->
+  <polygon points="192,36 216,76 168,76" stroke="#ffffff" stroke-width="6" fill="none" stroke-linejoin="round"/>
+  <polygon points="192,36 216,76 168,76" fill="#f59e0b" stroke="#d97706" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- === Output node: Circle (middle-right) === -->
+  <!-- Teal/cyan circle -->
+  <circle cx="208" cy="128" r="24" stroke="#ffffff" stroke-width="6" fill="none"/>
+  <circle cx="208" cy="128" r="24" fill="#06b6d4" stroke="#0891b2" stroke-width="3"/>
+
+  <!-- === Output node: Square (bottom-right) === -->
+  <!-- Purple/violet square -->
+  <rect x="168" y="168" width="48" height="48" rx="4" stroke="#ffffff" stroke-width="6" fill="none"/>
+  <rect x="168" y="168" width="48" height="48" rx="4" fill="#8b5cf6" stroke="#7c3aed" stroke-width="3"/>
+</svg>

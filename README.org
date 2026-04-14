@@ -1,6 +1,8 @@
 #+title: garage-queue
 #+language: en
 
+[[file:assets/garage-queue-icon-03.svg]]
+
 A heterogeneous, capability-aware work queue.  Producers submit payloads; the
 queue matches each item to workers that have the hardware and software
 capabilities to handle it.

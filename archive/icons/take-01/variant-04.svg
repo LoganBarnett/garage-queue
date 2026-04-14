@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Variant 04: Minimal line-art style, thin strokes, shapes are outlines only with color -->
+  <defs>
+    <style>
+      .wire { stroke: #666; stroke-width: 2; fill: none; stroke-linecap: round; }
+      .wire-bg { stroke: #fff; stroke-width: 5; fill: none; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <!-- Input line with small diamond at start -->
+  <line x1="20" y1="128" x2="82" y2="128" class="wire-bg"/>
+  <line x1="20" y1="128" x2="82" y2="128" class="wire"/>
+  <polygon points="20,128 28,122 36,128 28,134" fill="#fff" stroke="#666" stroke-width="2"/>
+
+  <!-- Garage: just roof angle + vertical walls, very simplified -->
+  <path d="M82,150 L82,110 L106,90 L130,110 L130,150" stroke="#fff" stroke-width="5" fill="none" stroke-linejoin="round"/>
+  <path d="M82,150 L82,110 L106,90 L130,110 L130,150" stroke="#666" stroke-width="2" fill="none" stroke-linejoin="round"/>
+  <!-- Simple door lines -->
+  <line x1="98" y1="150" x2="98" y2="126" stroke="#fff" stroke-width="4"/>
+  <line x1="114" y1="150" x2="114" y2="126" stroke="#fff" stroke-width="4"/>
+  <line x1="98" y1="126" x2="114" y2="126" stroke="#fff" stroke-width="4"/>
+  <line x1="98" y1="150" x2="98" y2="126" stroke="#666" stroke-width="2"/>
+  <line x1="114" y1="150" x2="114" y2="126" stroke="#666" stroke-width="2"/>
+  <line x1="98" y1="126" x2="114" y2="126" stroke="#666" stroke-width="2"/>
+
+  <!-- Delicate fork lines -->
+  <path d="M130,116 Q152,80 176,64" class="wire-bg"/>
+  <path d="M130,116 Q152,80 176,64" class="wire"/>
+
+  <line x1="130" y1="128" x2="182" y2="128" class="wire-bg"/>
+  <line x1="130" y1="128" x2="182" y2="128" class="wire"/>
+
+  <path d="M130,140 Q152,176 176,192" class="wire-bg"/>
+  <path d="M130,140 Q152,176 176,192" class="wire"/>
+
+  <!-- Triangle: outline only, warm orange -->
+  <polygon points="200,34 226,76 174,76" stroke="#fff" stroke-width="5" fill="none" stroke-linejoin="round"/>
+  <polygon points="200,34 226,76 174,76" stroke="#f97316" stroke-width="2.5" fill="none" stroke-linejoin="round"/>
+
+  <!-- Circle: outline only, indigo -->
+  <circle cx="210" cy="128" r="24" stroke="#fff" stroke-width="5" fill="none"/>
+  <circle cx="210" cy="128" r="24" stroke="#6366f1" stroke-width="2.5" fill="none"/>
+
+  <!-- Square: outline only, teal -->
+  <rect x="176" y="172" width="48" height="48" rx="3" stroke="#fff" stroke-width="5" fill="none"/>
+  <rect x="176" y="172" width="48" height="48" rx="3" stroke="#14b8a6" stroke-width="2.5" fill="none"/>
+</svg>

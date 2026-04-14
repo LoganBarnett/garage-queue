@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Take 02, Variant 03: Larger teal door panel (most of face), bolder shapes, 01-palette -->
+
+  <!-- Input line -->
+  <line x1="12" y1="128" x2="72" y2="128" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="12" y1="128" x2="72" y2="128" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Garage body -->
+  <rect x="72" y="92" width="56" height="72" rx="3" stroke="#fff" stroke-width="7" fill="none" stroke-linejoin="round"/>
+  <rect x="72" y="92" width="56" height="72" rx="3" fill="#7c3aed" stroke="#6d28d9" stroke-width="3"/>
+
+  <!-- Large garage door: spans most of the face -->
+  <rect x="80" y="106" width="40" height="58" rx="3" fill="#14b8a6" stroke="#0d9488" stroke-width="2.5"/>
+  <!-- Horizontal door segments -->
+  <line x1="80" y1="120" x2="120" y2="120" stroke="#0d9488" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="80" y1="134" x2="120" y2="134" stroke="#0d9488" stroke-width="1.5" stroke-linecap="round"/>
+  <line x1="80" y1="148" x2="120" y2="148" stroke="#0d9488" stroke-width="1.5" stroke-linecap="round"/>
+
+  <!-- Fork lines -->
+  <line x1="128" y1="108" x2="166" y2="62" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="108" x2="166" y2="62" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <line x1="128" y1="128" x2="178" y2="128" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="128" x2="178" y2="128" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <line x1="128" y1="148" x2="166" y2="194" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="148" x2="166" y2="194" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Triangle: amber, slightly larger -->
+  <polygon points="194,30 224,78 164,78" stroke="#fff" stroke-width="7" fill="none" stroke-linejoin="round"/>
+  <polygon points="194,30 224,78 164,78" fill="#f59e0b" stroke="#d97706" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Circle: cyan -->
+  <circle cx="206" cy="128" r="28" stroke="#fff" stroke-width="7" fill="none"/>
+  <circle cx="206" cy="128" r="28" fill="#06b6d4" stroke="#0891b2" stroke-width="3"/>
+
+  <!-- Square: violet -->
+  <rect x="166" y="168" width="56" height="56" rx="4" stroke="#fff" stroke-width="7" fill="none"/>
+  <rect x="166" y="168" width="56" height="56" rx="4" fill="#8b5cf6" stroke="#7c3aed" stroke-width="3"/>
+</svg>

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Take 02, Variant 05: Deeper purple, high-contrast teal door with arch top, mixed best-of palette -->
+
+  <!-- Input line -->
+  <line x1="12" y1="128" x2="72" y2="128" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="12" y1="128" x2="72" y2="128" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Garage body: deeper purple -->
+  <rect x="72" y="92" width="56" height="72" rx="3" stroke="#fff" stroke-width="7" fill="none" stroke-linejoin="round"/>
+  <rect x="72" y="92" width="56" height="72" rx="3" fill="#6d28d9" stroke="#5b21b6" stroke-width="3"/>
+
+  <!-- Arched teal door -->
+  <path d="M84,164 L84,118 Q100,100 116,118 L116,164 Z" fill="#2dd4bf" stroke="#0d9488" stroke-width="2.5" stroke-linejoin="round"/>
+
+  <!-- Fork lines -->
+  <line x1="128" y1="108" x2="168" y2="60" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="108" x2="168" y2="60" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <line x1="128" y1="128" x2="178" y2="128" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="128" x2="178" y2="128" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <line x1="128" y1="148" x2="168" y2="196" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="128" y1="148" x2="168" y2="196" stroke="#555" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Triangle: vivid amber -->
+  <polygon points="196,30 226,78 166,78" stroke="#fff" stroke-width="7" fill="none" stroke-linejoin="round"/>
+  <polygon points="196,30 226,78 166,78" fill="#fbbf24" stroke="#d97706" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Circle: vivid cyan -->
+  <circle cx="208" cy="128" r="28" stroke="#fff" stroke-width="7" fill="none"/>
+  <circle cx="208" cy="128" r="28" fill="#22d3ee" stroke="#0891b2" stroke-width="3"/>
+
+  <!-- Square: vivid emerald -->
+  <rect x="168" y="170" width="56" height="56" rx="4" stroke="#fff" stroke-width="7" fill="none"/>
+  <rect x="168" y="170" width="56" height="56" rx="4" fill="#34d399" stroke="#059669" stroke-width="3"/>
+</svg>

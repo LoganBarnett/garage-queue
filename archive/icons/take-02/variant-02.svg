@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Take 02, Variant 02: Purple garage, teal door, curved forks, 02-palette shapes (coral/sky/emerald) -->
+
+  <!-- Input line -->
+  <line x1="12" y1="128" x2="72" y2="128" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+  <line x1="12" y1="128" x2="72" y2="128" stroke="#444" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Garage body -->
+  <rect x="72" y="94" width="56" height="68" rx="3" stroke="#fff" stroke-width="7" fill="none" stroke-linejoin="round"/>
+  <rect x="72" y="94" width="56" height="68" rx="3" fill="#7c3aed" stroke="#6d28d9" stroke-width="3"/>
+
+  <!-- Garage door -->
+  <rect x="86" y="112" width="28" height="50" rx="2" fill="#14b8a6" stroke="#0d9488" stroke-width="2"/>
+  <circle cx="108" cy="138" r="2.5" fill="#0d9488" stroke="#0f766e" stroke-width="1"/>
+
+  <!-- Curved fork lines -->
+  <path d="M128,110 C152,110 156,70 176,60" stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round"/>
+  <path d="M128,110 C152,110 156,70 176,60" stroke="#444" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <path d="M128,128 C155,128 165,128 180,128" stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round"/>
+  <path d="M128,128 C155,128 165,128 180,128" stroke="#444" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <path d="M128,146 C152,146 156,186 176,196" stroke="#fff" stroke-width="7" fill="none" stroke-linecap="round"/>
+  <path d="M128,146 C152,146 156,186 176,196" stroke="#444" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <!-- Triangle: coral -->
+  <polygon points="200,32 228,76 172,76" stroke="#fff" stroke-width="7" fill="none" stroke-linejoin="round"/>
+  <polygon points="200,32 228,76 172,76" fill="#fb7185" stroke="#e11d48" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Circle: sky blue -->
+  <circle cx="208" cy="128" r="26" stroke="#fff" stroke-width="7" fill="none"/>
+  <circle cx="208" cy="128" r="26" fill="#38bdf8" stroke="#0284c7" stroke-width="3"/>
+
+  <!-- Square: emerald -->
+  <rect x="172" y="172" width="52" height="52" rx="4" stroke="#fff" stroke-width="7" fill="none"/>
+  <rect x="172" y="172" width="52" height="52" rx="4" fill="#34d399" stroke="#059669" stroke-width="3"/>
+</svg>

@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Variant 05: Dark garage with colored connecting lines matching their destination shape -->
+  <defs>
+    <style>
+      .bg { stroke: #fff; fill: none; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <!-- Input line: neutral -->
+  <line x1="12" y1="128" x2="76" y2="128" class="bg" stroke-width="7"/>
+  <line x1="12" y1="128" x2="76" y2="128" stroke="#777" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <!-- Garage -->
+  <path d="M76,152 L76,106 L104,84 L132,106 L132,152 Z" class="bg" stroke-width="7"/>
+  <path d="M76,152 L76,106 L104,84 L132,106 L132,152 Z" fill="#333" stroke="#333" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Door: lighter inset -->
+  <rect x="92" y="122" width="24" height="30" rx="12" fill="#555" stroke="#fff" stroke-width="4"/>
+  <rect x="92" y="122" width="24" height="30" rx="12" fill="#555" stroke="#333" stroke-width="2"/>
+
+  <!-- Fork line to triangle: orange -->
+  <path d="M132,112 L170,64" class="bg" stroke-width="7"/>
+  <path d="M132,112 L170,64" stroke="#f59e0b" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <!-- Fork line to circle: cyan -->
+  <line x1="132" y1="128" x2="180" y2="128" class="bg" stroke-width="7"/>
+  <line x1="132" y1="128" x2="180" y2="128" stroke="#06b6d4" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <!-- Fork line to square: violet -->
+  <path d="M132,144 L170,192" class="bg" stroke-width="7"/>
+  <path d="M132,144 L170,192" stroke="#a78bfa" stroke-width="3" fill="none" stroke-linecap="round"/>
+
+  <!-- Triangle: amber/orange, filled -->
+  <polygon points="196,34 224,78 168,78" class="bg" stroke-width="7"/>
+  <polygon points="196,34 224,78 168,78" fill="#f59e0b" stroke="#d97706" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- Circle: cyan, filled -->
+  <circle cx="208" cy="128" r="26" class="bg" stroke-width="7"/>
+  <circle cx="208" cy="128" r="26" fill="#06b6d4" stroke="#0891b2" stroke-width="3"/>
+
+  <!-- Square: violet, filled -->
+  <rect x="170" y="168" width="52" height="52" rx="5" class="bg" stroke-width="7"/>
+  <rect x="170" y="168" width="52" height="52" rx="5" fill="#a78bfa" stroke="#7c3aed" stroke-width="3"/>
+</svg>

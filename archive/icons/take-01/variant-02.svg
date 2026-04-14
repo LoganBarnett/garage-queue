@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Variant 02: Rounded, softer aesthetic with pastel fills and curved fork lines -->
+  <defs>
+    <style>
+      .wire { stroke: #555; stroke-width: 2.5; fill: none; stroke-linecap: round; }
+      .wire-bg { stroke: #fff; stroke-width: 6; fill: none; stroke-linecap: round; }
+    </style>
+  </defs>
+
+  <!-- Input line -->
+  <line x1="12" y1="128" x2="72" y2="128" class="wire-bg"/>
+  <line x1="12" y1="128" x2="72" y2="128" class="wire"/>
+
+  <!-- Garage: rounded rectangle body + arch roof -->
+  <path d="M72,152 L72,106 Q100,78 128,106 L128,152 Z" stroke="#fff" stroke-width="6" fill="none" stroke-linejoin="round"/>
+  <path d="M72,152 L72,106 Q100,78 128,106 L128,152 Z" fill="#3d3d3d" stroke="#555" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- Garage door -->
+  <rect x="90" y="124" width="20" height="28" rx="10" stroke="#fff" stroke-width="5" fill="none"/>
+  <rect x="90" y="124" width="20" height="28" rx="10" fill="#5a5a5a" stroke="#555" stroke-width="2"/>
+
+  <!-- Curved fork lines -->
+  <path d="M128,115 C150,115 160,72 182,62" class="wire-bg"/>
+  <path d="M128,115 C150,115 160,72 182,62" class="wire"/>
+
+  <path d="M128,128 C155,128 165,128 182,128" class="wire-bg"/>
+  <path d="M128,128 C155,128 165,128 182,128" class="wire"/>
+
+  <path d="M128,141 C150,141 160,184 182,194" class="wire-bg"/>
+  <path d="M128,141 C150,141 160,184 182,194" class="wire"/>
+
+  <!-- Triangle: coral/salmon -->
+  <polygon points="206,34 232,78 180,78" stroke="#fff" stroke-width="6" fill="none" stroke-linejoin="round"/>
+  <polygon points="206,34 232,78 180,78" fill="#fb7185" stroke="#e11d48" stroke-width="2.5" stroke-linejoin="round"/>
+
+  <!-- Circle: sky blue -->
+  <circle cx="210" cy="128" r="26" stroke="#fff" stroke-width="6" fill="none"/>
+  <circle cx="210" cy="128" r="26" fill="#38bdf8" stroke="#0284c7" stroke-width="2.5"/>
+
+  <!-- Square: emerald green -->
+  <rect x="182" y="170" width="52" height="52" rx="6" stroke="#fff" stroke-width="6" fill="none"/>
+  <rect x="182" y="170" width="52" height="52" rx="6" fill="#34d399" stroke="#059669" stroke-width="2.5"/>
+</svg>

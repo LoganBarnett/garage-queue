@@ -151,6 +151,8 @@ impl TestServer {
             mode: QueueMode::Exclusive,
             combiner: None,
             extractors: vec![],
+            delegate_path: None,
+            delegate_method: None,
           },
         )]),
       },
@@ -339,6 +341,8 @@ async fn poll_skips_items_with_unmet_tag_requirement() {
             kind: ExtractorKind::Tag,
             source: JqSource::Inline(".model".to_string()),
           }],
+          delegate_path: None,
+          delegate_method: None,
         },
       )]),
     },
@@ -418,6 +422,8 @@ async fn poll_matches_scalar_capability() {
             kind: ExtractorKind::Scalar,
             source: JqSource::Inline(".vram_mb".to_string()),
           }],
+          delegate_path: None,
+          delegate_method: None,
         },
       )]),
     },
@@ -806,6 +812,8 @@ fn broadcast_config(nats_url: &str) -> Config {
         mode: QueueMode::Broadcast,
         combiner: Some(JqSource::Inline("[.[] | .response] | add".to_string())),
         extractors: vec![],
+        delegate_path: None,
+        delegate_method: None,
       },
     )]),
   }
@@ -922,6 +930,8 @@ async fn broadcast_combiner_merges_responses() {
           "[.[] | .response.value] | sort".to_string(),
         )),
         extractors: vec![],
+        delegate_path: None,
+        delegate_method: None,
       },
     )]),
   };
@@ -1022,6 +1032,8 @@ async fn get_intake_uses_empty_payload() {
           mode: QueueMode::Exclusive,
           combiner: None,
           extractors: vec![],
+          delegate_path: None,
+          delegate_method: None,
         },
       )]),
     },
@@ -1077,4 +1089,88 @@ async fn get_intake_uses_empty_payload() {
   assert_eq!(intake_resp.status(), 200);
   let body: serde_json::Value = intake_resp.json().await.unwrap();
   assert_eq!(body, worker_response);
+}
+
+#[tokio::test]
+async fn delegation_hints_present_in_polled_item() {
+  let nats = TestNats::acquire();
+
+  let server = TestServer::start_with(
+    &nats.url,
+    Config {
+      log_level: LogLevel::Warn,
+      log_format: LogFormat::Text,
+      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+      nats_url: nats.url.clone(),
+      queues: HashMap::from([(
+        "delegated".to_string(),
+        QueueConfig {
+          route: Some("/delegated".to_string()),
+          method: Some(Method::Get),
+          mode: QueueMode::Exclusive,
+          combiner: None,
+          extractors: vec![],
+          delegate_path: Some("/api/tags".to_string()),
+          delegate_method: Some(Method::Get),
+        },
+      )]),
+    },
+  )
+  .await;
+
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // GET /delegated — no body.
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client
+        .get(format!("{base}/delegated"))
+        .send()
+        .await
+        .unwrap()
+    })
+  };
+
+  tokio::time::sleep(Duration::from_millis(100)).await;
+
+  // Poll — should get item with delegation hints.
+  let poll_resp = client
+    .post(format!("{base}/api/work/poll"))
+    .json(&WorkPoll {
+      capabilities: WorkerCapabilities::default(),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  assert_eq!(poll_resp.status(), 200);
+  let item: QueueItem = poll_resp.json().await.unwrap();
+  assert_eq!(
+    item.delegate_path.as_deref(),
+    Some("/api/tags"),
+    "delegate_path should be set"
+  );
+  assert_eq!(
+    item.delegate_method.as_deref(),
+    Some("get"),
+    "delegate_method should be set"
+  );
+
+  // Return result so the intake request can resolve.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item.id,
+      worker_id: "hint-worker".into(),
+      response: json!({ "models": [] }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  let intake_resp = intake_handle.await.unwrap();
+  assert_eq!(intake_resp.status(), 200);
 }

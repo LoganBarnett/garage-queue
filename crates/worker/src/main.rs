@@ -176,7 +176,14 @@ async fn run_sse_loop(
         return;
       }
 
-      match delegator.delegate(&item.payload).await {
+      match delegator
+        .delegate(
+          &item.payload,
+          item.delegate_path.as_deref(),
+          item.delegate_method.as_deref(),
+        )
+        .await
+      {
         Ok(response) => {
           let work_result = WorkResult {
             item_id: item.id,

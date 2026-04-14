@@ -124,6 +124,12 @@ pub struct QueueConfigRaw {
   /// Path to a jq file to combine broadcast responses into a single result.
   pub combiner_jq_file: Option<PathBuf>,
 
+  /// Optional URL path hint for workers delegating items from this queue.
+  pub delegate_path: Option<String>,
+
+  /// Optional HTTP method hint for workers delegating items from this queue.
+  pub delegate_method: Option<MethodRaw>,
+
   #[serde(default)]
   pub extractors: HashMap<String, ExtractorConfigRaw>,
 }
@@ -194,6 +200,10 @@ pub struct QueueConfig {
   pub mode: QueueMode,
   pub combiner: Option<JqSource>,
   pub extractors: Vec<ExtractorConfig>,
+  /// Optional URL path hint for workers delegating items from this queue.
+  pub delegate_path: Option<String>,
+  /// Optional HTTP method hint (lowercase string) for workers.
+  pub delegate_method: Option<Method>,
 }
 
 #[derive(Debug)]
@@ -336,6 +346,14 @@ fn validate_queue_config(
     _ => {}
   }
 
+  let delegate_method = raw.delegate_method.map(|m| match m {
+    MethodRaw::Get => Method::Get,
+    MethodRaw::Post => Method::Post,
+    MethodRaw::Put => Method::Put,
+    MethodRaw::Patch => Method::Patch,
+    MethodRaw::Delete => Method::Delete,
+  });
+
   let extractors = raw
     .extractors
     .into_iter()
@@ -350,6 +368,8 @@ fn validate_queue_config(
     mode,
     combiner,
     extractors,
+    delegate_path: raw.delegate_path,
+    delegate_method,
   })
 }
 
@@ -531,5 +551,74 @@ method = "post"
     let cli = cli_with_config(path.to_str().unwrap());
     let err = Config::from_cli_and_file(cli).unwrap_err();
     assert!(matches!(err, ConfigError::MethodWithoutRoute { .. }));
+  }
+
+  #[test]
+  fn delegate_path_and_method_are_parsed() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delegate.toml");
+    std::fs::write(
+      &path,
+      r#"
+[queues.tags]
+route = "/api/tags"
+method = "get"
+mode = "broadcast"
+combiner_jq_exp = "."
+delegate_path = "/api/tags"
+delegate_method = "get"
+"#,
+    )
+    .unwrap();
+
+    let cli = cli_with_config(path.to_str().unwrap());
+    let config = Config::from_cli_and_file(cli).unwrap();
+    let q = &config.queues["tags"];
+    assert_eq!(q.delegate_path.as_deref(), Some("/api/tags"));
+    assert_eq!(q.delegate_method, Some(Method::Get));
+  }
+
+  #[test]
+  fn delegate_path_only_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delegate_path_only.toml");
+    std::fs::write(
+      &path,
+      r#"
+[queues.test]
+route = "/test"
+method = "post"
+delegate_path = "/custom"
+"#,
+    )
+    .unwrap();
+
+    let cli = cli_with_config(path.to_str().unwrap());
+    let config = Config::from_cli_and_file(cli).unwrap();
+    let q = &config.queues["test"];
+    assert_eq!(q.delegate_path.as_deref(), Some("/custom"));
+    assert!(q.delegate_method.is_none());
+  }
+
+  #[test]
+  fn delegate_method_only_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("delegate_method_only.toml");
+    std::fs::write(
+      &path,
+      r#"
+[queues.test]
+route = "/test"
+method = "post"
+delegate_method = "put"
+"#,
+    )
+    .unwrap();
+
+    let cli = cli_with_config(path.to_str().unwrap());
+    let config = Config::from_cli_and_file(cli).unwrap();
+    let q = &config.queues["test"];
+    assert!(q.delegate_path.is_none());
+    assert_eq!(q.delegate_method, Some(Method::Put));
   }
 }

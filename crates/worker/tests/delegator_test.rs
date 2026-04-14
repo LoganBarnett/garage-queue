@@ -27,7 +27,7 @@ async fn successful_delegation_forwards_payload() {
   let delegator = HttpDelegator::new(&url);
 
   let payload = json!({ "model": "llama3.2:8b", "prompt": "hello" });
-  let result = delegator.delegate(&payload).await.unwrap();
+  let result = delegator.delegate(&payload, None, None).await.unwrap();
 
   // The echo server returns what it received; the delegator forces stream: false.
   assert_eq!(result["model"], "llama3.2:8b");
@@ -41,7 +41,7 @@ async fn stream_false_is_injected() {
 
   // Send a payload with stream: true — the delegator should override it.
   let payload = json!({ "model": "test", "stream": true });
-  let result = delegator.delegate(&payload).await.unwrap();
+  let result = delegator.delegate(&payload, None, None).await.unwrap();
 
   assert_eq!(result["stream"], false);
 }
@@ -52,7 +52,7 @@ async fn connection_failure_returns_http_error() {
   let delegator = HttpDelegator::new("http://127.0.0.1:1");
   let payload = json!({ "model": "test" });
 
-  let err = delegator.delegate(&payload).await.unwrap_err();
+  let err = delegator.delegate(&payload, None, None).await.unwrap_err();
   assert!(matches!(
     err,
     garage_queue_worker::delegator::DelegateError::Http(_)

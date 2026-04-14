@@ -16,6 +16,16 @@ pub struct QueueItem {
 
   /// Capability requirements extracted from the payload at intake time.
   pub requirements: Vec<CapabilityRequirement>,
+
+  /// Optional URL path the worker should use when delegating this item,
+  /// overriding the worker's default configured URL path.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub delegate_path: Option<String>,
+
+  /// Optional HTTP method the worker should use when delegating this item
+  /// (e.g. "get", "post").  Overrides the worker's default POST.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub delegate_method: Option<String>,
 }
 
 /// Body sent by a worker when establishing an SSE connection.

@@ -44,7 +44,7 @@ pub async fn handle_intake(
     .unwrap_or_else(|| serde_json::json!({}));
   let path = uri.path().to_string();
 
-  let (queue_name, requirements, mode) = {
+  let (queue_name, requirements, mode, delegate_path, delegate_method) = {
     let live = state.live.read().await;
 
     let queue_name = live
@@ -91,7 +91,17 @@ pub async fn handle_intake(
 
     let mode = compiled.mode;
 
-    (queue_name, requirements, mode)
+    let queue_cfg = &live.config.queues[&queue_name];
+    let delegate_path = queue_cfg.delegate_path.clone();
+    let delegate_method = queue_cfg.delegate_method.map(|m| match m {
+      crate::config::Method::Get => "get".to_string(),
+      crate::config::Method::Post => "post".to_string(),
+      crate::config::Method::Put => "put".to_string(),
+      crate::config::Method::Patch => "patch".to_string(),
+      crate::config::Method::Delete => "delete".to_string(),
+    });
+
+    (queue_name, requirements, mode, delegate_path, delegate_method)
   };
 
   let item = QueueItem {
@@ -99,6 +109,8 @@ pub async fn handle_intake(
     queue: queue_name.clone(),
     payload,
     requirements: requirements.clone(),
+    delegate_path,
+    delegate_method,
   };
 
   info!(

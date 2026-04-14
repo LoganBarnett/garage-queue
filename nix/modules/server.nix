@@ -35,26 +35,11 @@ let
   listenValue =
     if cfg.socket != null then "sd-listen"
     else "${cfg.host}:${toString cfg.port}";
+  integrations = import ./integrations.nix { inherit lib; };
   # Derive TOML queue config from the declarative queues option.  A single
   # integration can expand into multiple TOML queues (e.g. ollama produces
   # both {name}-generate and {name}-tags).
-  queueSettings = lib.foldlAttrs (acc: name: qCfg:
-    acc // lib.optionalAttrs qCfg.integrations.ollama.enable {
-      "${name}-generate" = {
-        route = "/api/generate";
-        extractors.model_tag = {
-          kind = "tag";
-          capability = "model";
-          jq_exp = ".model";
-        };
-      };
-      "${name}-tags" = {
-        route = "/api/tags";
-        mode = "broadcast";
-        combiner_jq_exp = "{ models: [.[] | .response.models] | add | unique_by(.name) }";
-      };
-    }
-  ) { } cfg.queues;
+  queueSettings = integrations.expandQueues cfg.queues;
   mergedSettings = lib.recursiveUpdate cfg.settings (
     { server.listen = listenValue; }
     // lib.optionalAttrs (queueSettings != { }) { queues = queueSettings; }

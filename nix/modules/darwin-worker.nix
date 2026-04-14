@@ -32,8 +32,7 @@ let
   resolvedSettings = name: wCfg:
     let
       ollamaCfg = config.services.ollama;
-      # Every worker needs an id for SSE-based dispatch.
-      baseSettings = { worker.id = name; };
+      baseSettings = { };
       ollamaSettings = lib.optionalAttrs wCfg.integrations.ollama.enable {
         capabilities.tags = ollamaCfg.loadModels;
         delegator = {
@@ -121,6 +120,18 @@ in
   };
 
   config = lib.mkIf (enabledWorkers != { }) {
+    assertions = lib.mapAttrsToList (name: wCfg:
+      let resolved = resolvedSettings name wCfg;
+      in {
+        assertion = (resolved ? worker) && (resolved.worker ? id);
+        message = ''
+          garage-queue worker '${name}' is missing worker.id.
+          Set services.garage-queue-worker.workers.${name}.settings.worker.id
+          to a value unique across all hosts (e.g. the hostname).
+        '';
+      }
+    ) enabledWorkers;
+
     # User-level agents: start when the user logs in and can reach
     # services running in their session (e.g. Ollama on localhost).
     launchd.agents = lib.mapAttrs' (name: wCfg:

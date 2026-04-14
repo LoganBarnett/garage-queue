@@ -18,7 +18,8 @@ use garage_queue_lib::{LogFormat, LogLevel};
 use garage_queue_server::{
   build_router,
   config::{
-    Config, ExtractorConfig, ExtractorKind, JqSource, QueueConfig, QueueMode,
+    Config, ExtractorConfig, ExtractorKind, JqSource, Method, QueueConfig,
+    QueueMode,
   },
   intake::CompiledQueue,
   state::AppState,
@@ -116,8 +117,9 @@ impl TestServer {
       })
       .collect::<HashMap<_, _>>();
 
-    let state = AppState::new(Arc::new(config), js, compiled_queues);
-    let app = build_router(state);
+    let config = Arc::new(config);
+    let state = AppState::new(Arc::clone(&config), js, compiled_queues);
+    let app = build_router(state, &config);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
       .await
@@ -145,6 +147,7 @@ impl TestServer {
           "test".to_string(),
           QueueConfig {
             route: Some("/test".to_string()),
+            method: Some(Method::Post),
             mode: QueueMode::Exclusive,
             combiner: None,
             extractors: vec![],
@@ -328,6 +331,7 @@ async fn poll_skips_items_with_unmet_tag_requirement() {
         "tagged".to_string(),
         QueueConfig {
           route: Some("/tagged".to_string()),
+          method: Some(Method::Post),
           mode: QueueMode::Exclusive,
           combiner: None,
           extractors: vec![ExtractorConfig {
@@ -406,6 +410,7 @@ async fn poll_matches_scalar_capability() {
         "gpu".to_string(),
         QueueConfig {
           route: Some("/gpu".to_string()),
+          method: Some(Method::Post),
           mode: QueueMode::Exclusive,
           combiner: None,
           extractors: vec![ExtractorConfig {
@@ -797,6 +802,7 @@ fn broadcast_config(nats_url: &str) -> Config {
       "bcast".to_string(),
       QueueConfig {
         route: Some("/bcast".to_string()),
+        method: Some(Method::Post),
         mode: QueueMode::Broadcast,
         combiner: Some(JqSource::Inline("[.[] | .response] | add".to_string())),
         extractors: vec![],
@@ -910,6 +916,7 @@ async fn broadcast_combiner_merges_responses() {
       "merge".to_string(),
       QueueConfig {
         route: Some("/merge".to_string()),
+        method: Some(Method::Post),
         mode: QueueMode::Broadcast,
         combiner: Some(JqSource::Inline(
           "[.[] | .response.value] | sort".to_string(),
@@ -994,4 +1001,80 @@ async fn broadcast_combiner_merges_responses() {
   assert_eq!(intake_resp.status(), 200);
   let body: serde_json::Value = intake_resp.json().await.unwrap();
   assert_eq!(body, json!([10, 20]));
+}
+
+#[tokio::test]
+async fn get_intake_uses_empty_payload() {
+  let nats = TestNats::acquire();
+
+  let server = TestServer::start_with(
+    &nats.url,
+    Config {
+      log_level: LogLevel::Warn,
+      log_format: LogFormat::Text,
+      listen_address: "127.0.0.1:0".parse::<ListenerAddress>().unwrap(),
+      nats_url: nats.url.clone(),
+      queues: HashMap::from([(
+        "get-queue".to_string(),
+        QueueConfig {
+          route: Some("/get-test".to_string()),
+          method: Some(Method::Get),
+          mode: QueueMode::Exclusive,
+          combiner: None,
+          extractors: vec![],
+        },
+      )]),
+    },
+  )
+  .await;
+
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // GET /get-test — no body.
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client.get(format!("{base}/get-test")).send().await.unwrap()
+    })
+  };
+
+  tokio::time::sleep(Duration::from_millis(100)).await;
+
+  // Poll — should get item with empty JSON object payload.
+  let poll_resp = client
+    .post(format!("{base}/api/work/poll"))
+    .json(&WorkPoll {
+      capabilities: WorkerCapabilities::default(),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  assert_eq!(poll_resp.status(), 200, "expected item from poll");
+  let item: QueueItem = poll_resp.json().await.unwrap();
+  assert_eq!(
+    item.payload,
+    json!({}),
+    "GET intake should produce empty payload"
+  );
+
+  // Return result so the intake request can resolve.
+  let worker_response = json!({ "result": "ok" });
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item.id,
+      worker_id: "get-worker".into(),
+      response: worker_response.clone(),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  let intake_resp = intake_handle.await.unwrap();
+  assert_eq!(intake_resp.status(), 200);
+  let body: serde_json::Value = intake_resp.json().await.unwrap();
+  assert_eq!(body, worker_response);
 }

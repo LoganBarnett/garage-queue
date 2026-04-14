@@ -28,16 +28,20 @@ enum NatsPersistError {
   },
 }
 
-/// POST /*path
+/// Intake endpoint for configured queue routes.
 ///
-/// Generic intake endpoint.  The request path is matched against each queue's
-/// configured route; the payload is enqueued on the matching queue and this
-/// handler holds the connection open until a worker returns a result.
+/// The request path is matched against each queue's configured route; the
+/// payload is enqueued on the matching queue and this handler holds the
+/// connection open until a worker returns a result.  For methods that
+/// don't carry a body (e.g. GET), the payload defaults to `{}`.
 pub async fn handle_intake(
   State(state): State<AppState>,
   OriginalUri(uri): OriginalUri,
-  Json(payload): Json<serde_json::Value>,
+  body: Option<Json<serde_json::Value>>,
 ) -> impl IntoResponse {
+  let payload = body
+    .map(|Json(v)| v)
+    .unwrap_or_else(|| serde_json::json!({}));
   let path = uri.path().to_string();
 
   let (queue_name, requirements, mode) = {

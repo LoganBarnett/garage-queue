@@ -42,6 +42,12 @@ pub enum ConfigError {
   #[error("Exclusive queue '{queue}' must not have a combiner")]
   ExclusiveCombinerForbidden { queue: String },
 
+  #[error("Queue '{queue}' has a route but no method")]
+  RouteMissingMethod { queue: String },
+
+  #[error("Queue '{queue}' has a method but no route")]
+  MethodWithoutRoute { queue: String },
+
   #[error("Configuration validation failed: {0}")]
   Validation(String),
 }
@@ -87,12 +93,26 @@ pub enum QueueModeRaw {
   Broadcast,
 }
 
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum MethodRaw {
+  Get,
+  Post,
+  Put,
+  Patch,
+  Delete,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct QueueConfigRaw {
   /// HTTP path at which this queue accepts intake requests.  When set, the
-  /// server registers a POST handler at this path that enqueues payloads and
+  /// server registers a handler at this path that enqueues payloads and
   /// waits for a worker result.
   pub route: Option<String>,
+
+  /// HTTP method for the intake route (get, post, put, patch, delete).
+  /// Required when route is set; forbidden when route is omitted.
+  pub method: Option<MethodRaw>,
 
   /// Dispatch mode: exclusive (one worker) or broadcast (all matching workers).
   #[serde(default)]
@@ -156,10 +176,21 @@ pub enum QueueMode {
   Broadcast,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+  Get,
+  Post,
+  Put,
+  Patch,
+  Delete,
+}
+
 #[derive(Debug)]
 pub struct QueueConfig {
   /// HTTP path at which this queue accepts intake requests, if any.
   pub route: Option<String>,
+  /// HTTP method for the intake route, if any.
+  pub method: Option<Method>,
   pub mode: QueueMode,
   pub combiner: Option<JqSource>,
   pub extractors: Vec<ExtractorConfig>,
@@ -258,6 +289,28 @@ fn validate_queue_config(
     QueueModeRaw::Broadcast => QueueMode::Broadcast,
   };
 
+  // Route and method must both be present or both absent.
+  let method = match (&raw.route, raw.method) {
+    (Some(_), Some(m)) => Some(match m {
+      MethodRaw::Get => Method::Get,
+      MethodRaw::Post => Method::Post,
+      MethodRaw::Put => Method::Put,
+      MethodRaw::Patch => Method::Patch,
+      MethodRaw::Delete => Method::Delete,
+    }),
+    (Some(_), None) => {
+      return Err(ConfigError::RouteMissingMethod {
+        queue: queue_name.to_string(),
+      });
+    }
+    (None, Some(_)) => {
+      return Err(ConfigError::MethodWithoutRoute {
+        queue: queue_name.to_string(),
+      });
+    }
+    (None, None) => None,
+  };
+
   let combiner = match (raw.combiner_jq_exp, raw.combiner_jq_file) {
     (Some(exp), None) => Some(JqSource::Inline(exp)),
     (None, Some(file)) => Some(JqSource::File(file)),
@@ -293,6 +346,7 @@ fn validate_queue_config(
 
   Ok(QueueConfig {
     route: raw.route,
+    method,
     mode,
     combiner,
     extractors,
@@ -389,6 +443,7 @@ mod tests {
       r#"
 [queues.test]
 route = "/test"
+method = "post"
 
 [queues.test.extractors.bad]
 kind = "tag"
@@ -413,6 +468,7 @@ jq_file = "model.jq"
       r#"
 [queues.test]
 route = "/test"
+method = "post"
 
 [queues.test.extractors.bad]
 kind = "tag"
@@ -439,5 +495,41 @@ capability = "model"
     };
     let config = Config::from_cli_and_file(cli).unwrap();
     assert!(matches!(config.log_level, LogLevel::Debug));
+  }
+
+  #[test]
+  fn route_without_method_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("no_method.toml");
+    std::fs::write(
+      &path,
+      r#"
+[queues.test]
+route = "/test"
+"#,
+    )
+    .unwrap();
+
+    let cli = cli_with_config(path.to_str().unwrap());
+    let err = Config::from_cli_and_file(cli).unwrap_err();
+    assert!(matches!(err, ConfigError::RouteMissingMethod { .. }));
+  }
+
+  #[test]
+  fn method_without_route_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("no_route.toml");
+    std::fs::write(
+      &path,
+      r#"
+[queues.test]
+method = "post"
+"#,
+    )
+    .unwrap();
+
+    let cli = cli_with_config(path.to_str().unwrap());
+    let err = Config::from_cli_and_file(cli).unwrap_err();
+    assert!(matches!(err, ConfigError::MethodWithoutRoute { .. }));
   }
 }

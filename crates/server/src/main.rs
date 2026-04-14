@@ -74,7 +74,7 @@ async fn main() -> Result<(), ApplicationError> {
   let config = Arc::new(config);
   let state = AppState::new(Arc::clone(&config), jetstream, compiled_queues);
 
-  let app = build_router(state);
+  let app = build_router(state, &config);
 
   let listener = tokio_listener::Listener::bind(
     &config.listen_address,

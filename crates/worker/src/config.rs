@@ -6,18 +6,18 @@ use rust_template_foundation::config::{
   CommonConfigFile, ConfigFileError,
 };
 use serde::Deserialize;
-use std::net::SocketAddr;
 use thiserror::Error;
+use tokio_listener::ListenerAddress;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
   #[error("Failed to load configuration file: {0}")]
   ConfigFile(#[from] ConfigFileError),
 
-  #[error("Failed to parse control bind address '{address}': {source}")]
-  AddressParse {
+  #[error("Failed to parse listen address '{address}': {reason}")]
+  ListenerAddressParse {
     address: String,
-    source: std::net::AddrParseError,
+    reason: &'static str,
   },
 
   #[error("Configuration validation failed: {0}")]
@@ -40,7 +40,8 @@ pub struct ConfigFileRaw {
   #[serde(flatten)]
   pub common: CommonConfigFile,
   pub worker: Option<WorkerSectionRaw>,
-  pub control: Option<ControlSectionRaw>,
+  pub control: Option<ListenSectionRaw>,
+  pub observe: Option<ListenSectionRaw>,
   pub capabilities: Option<WorkerCapabilities>,
   pub concurrency: Option<ConcurrencyConfigRaw>,
   pub delegator: Option<DelegatorConfigRaw>,
@@ -66,9 +67,8 @@ pub struct WorkerSectionRaw {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ControlSectionRaw {
-  pub host: Option<String>,
-  pub port: Option<u16>,
+pub struct ListenSectionRaw {
+  pub listen_address: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,7 +85,8 @@ pub struct Config {
   pub server_url: String,
   pub worker_id: String,
   pub reconnect_interval_ms: u64,
-  pub control_bind: SocketAddr,
+  pub control_bind: ListenerAddress,
+  pub observe_bind: ListenerAddress,
   pub capabilities: WorkerCapabilities,
   pub concurrency: garage_queue_lib::protocol::ConcurrencyConfig,
   pub delegator: DelegatorConfig,
@@ -128,17 +129,28 @@ impl Config {
 
     let reconnect_interval_ms = worker.reconnect_interval_ms.unwrap_or(1000);
 
-    let control = file.control.unwrap_or(ControlSectionRaw {
-      host: None,
-      port: None,
-    });
-    let control_host = control.host.unwrap_or_else(|| "127.0.0.1".to_string());
-    let control_port = control.port.unwrap_or(9091);
-    let control_bind = format!("{control_host}:{control_port}")
-      .parse()
-      .map_err(|source| ConfigError::AddressParse {
-        address: format!("{control_host}:{control_port}"),
-        source,
+    let control_address = file
+      .control
+      .and_then(|s| s.listen_address)
+      .unwrap_or_else(|| "127.0.0.1:9091".to_string());
+    let control_bind: ListenerAddress =
+      control_address.parse().map_err(|reason| {
+        ConfigError::ListenerAddressParse {
+          address: control_address,
+          reason,
+        }
+      })?;
+
+    let observe_address = file
+      .observe
+      .and_then(|s| s.listen_address)
+      .unwrap_or_else(|| "127.0.0.1:9092".to_string());
+    let observe_bind: ListenerAddress =
+      observe_address.parse().map_err(|reason| {
+        ConfigError::ListenerAddressParse {
+          address: observe_address,
+          reason,
+        }
       })?;
 
     let capabilities = file.capabilities.unwrap_or_default();
@@ -170,6 +182,7 @@ impl Config {
       worker_id,
       reconnect_interval_ms,
       control_bind,
+      observe_bind,
       capabilities,
       concurrency,
       delegator,

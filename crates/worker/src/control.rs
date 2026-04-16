@@ -10,10 +10,10 @@ use rust_template_foundation::server::{
   health::{healthz_handler, HealthRegistry},
   metrics::metrics_handler,
 };
-use std::net::SocketAddr;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::watch;
+use tokio_listener::ListenerAddress;
 use tracing::info;
 
 /// The worker's operating state, controlled via the local HTTP control server.
@@ -32,13 +32,22 @@ pub enum WorkerStatus {
 #[derive(Debug, Error)]
 pub enum ControlError {
   #[error("Failed to bind control server to '{address}': {source}")]
-  Bind {
-    address: SocketAddr,
+  ControlBind {
+    address: ListenerAddress,
+    source: std::io::Error,
+  },
+
+  #[error("Failed to bind observability server to '{address}': {source}")]
+  ObserveBind {
+    address: ListenerAddress,
     source: std::io::Error,
   },
 
   #[error("Control server encountered a runtime error: {0}")]
-  Serve(#[source] std::io::Error),
+  ControlServe(#[source] std::io::Error),
+
+  #[error("Observability server encountered a runtime error: {0}")]
+  ObserveServe(#[source] std::io::Error),
 }
 
 pub type StatusSender = watch::Sender<WorkerStatus>;
@@ -48,68 +57,93 @@ pub fn status_channel() -> (StatusSender, StatusReceiver) {
   watch::channel(WorkerStatus::Running)
 }
 
-/// Composite state for the control server, holding the status channel
-/// alongside health and metrics registries.
+/// State for the observability server (/healthz, /metrics).
 #[derive(Clone)]
-pub struct ControlState {
-  pub status_tx: Arc<StatusSender>,
+pub struct ObserveState {
   pub health_registry: HealthRegistry,
   pub metrics_registry: Arc<Registry>,
 }
 
-impl FromRef<ControlState> for Arc<StatusSender> {
-  fn from_ref(state: &ControlState) -> Self {
-    state.status_tx.clone()
-  }
-}
-
-impl FromRef<ControlState> for HealthRegistry {
-  fn from_ref(state: &ControlState) -> Self {
+impl FromRef<ObserveState> for HealthRegistry {
+  fn from_ref(state: &ObserveState) -> Self {
     state.health_registry.clone()
   }
 }
 
-impl FromRef<ControlState> for Arc<Registry> {
-  fn from_ref(state: &ControlState) -> Self {
+impl FromRef<ObserveState> for Arc<Registry> {
+  fn from_ref(state: &ObserveState) -> Self {
     state.metrics_registry.clone()
   }
 }
 
-/// Builds the control server router.  Separated from `serve` so that tests can
-/// mount the router on an ephemeral listener without going through `serve`.
-pub fn router(state: ControlState) -> Router {
+/// Builds the observability router (health and metrics endpoints).
+pub fn observe_router(state: ObserveState) -> Router {
   Router::new()
     .route("/healthz", get(healthz_handler))
     .route("/metrics", get(metrics_handler))
+    .with_state(state)
+}
+
+/// Builds the control router (pause/resume/stop endpoints).
+pub fn control_router(tx: Arc<StatusSender>) -> Router {
+  Router::new()
     .route("/control/pause", post(pause))
     .route("/control/resume", post(resume))
     .route("/control/stop", post(stop_graceful))
     .route("/control/stop/immediate", post(stop_immediate))
-    .with_state(state)
+    .with_state(tx)
 }
 
-/// Starts the local control HTTP server.  This server is intentionally bound
-/// to localhost only and is intended for use by process supervisors (e.g.
-/// sytter) running on the same host.
-pub async fn serve(
-  bind: SocketAddr,
-  state: ControlState,
+/// Starts the observability HTTP server.
+pub async fn serve_observe(
+  bind: ListenerAddress,
+  state: ObserveState,
 ) -> Result<(), ControlError> {
-  let app = router(state);
+  let app = observe_router(state);
 
-  let listener =
-    tokio::net::TcpListener::bind(bind)
-      .await
-      .map_err(|source| ControlError::Bind {
-        address: bind,
-        source,
-      })?;
+  let listener = tokio_listener::Listener::bind(
+    &bind,
+    &tokio_listener::SystemOptions::default(),
+    &tokio_listener::UserOptions::default(),
+  )
+  .await
+  .map_err(|source| ControlError::ObserveBind {
+    address: bind.clone(),
+    source,
+  })?;
+
+  info!(address = %bind, "Observability server listening");
+
+  axum::serve(listener, app.into_make_service())
+    .await
+    .map_err(ControlError::ObserveServe)
+}
+
+/// Starts the local control HTTP server.  This server is intentionally
+/// separate from the observability server so that process control
+/// endpoints are not exposed alongside freely-scrapable metrics.
+pub async fn serve_control(
+  bind: ListenerAddress,
+  tx: Arc<StatusSender>,
+) -> Result<(), ControlError> {
+  let app = control_router(tx);
+
+  let listener = tokio_listener::Listener::bind(
+    &bind,
+    &tokio_listener::SystemOptions::default(),
+    &tokio_listener::UserOptions::default(),
+  )
+  .await
+  .map_err(|source| ControlError::ControlBind {
+    address: bind.clone(),
+    source,
+  })?;
 
   info!(address = %bind, "Control server listening");
 
-  axum::serve(listener, app)
+  axum::serve(listener, app.into_make_service())
     .await
-    .map_err(ControlError::Serve)
+    .map_err(ControlError::ControlServe)
 }
 
 async fn pause(State(tx): State<Arc<StatusSender>>) -> impl IntoResponse {

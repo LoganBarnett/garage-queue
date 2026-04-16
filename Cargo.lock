@@ -624,6 +624,7 @@ dependencies = [
  "tap",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-listener",
  "toml",
  "tracing",
  "uuid",

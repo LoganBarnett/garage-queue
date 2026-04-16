@@ -31,3 +31,4 @@ uuid = { workspace = true }
 futures-util = { workspace = true }
 eventsource-stream = { workspace = true }
 prometheus = { workspace = true }
+tokio-listener = { workspace = true }

@@ -1,5 +1,5 @@
 use garage_queue_worker::control::{
-  self, status_channel, ControlState, WorkerStatus,
+  self, status_channel, ObserveState, WorkerStatus,
 };
 use prometheus::Registry;
 use rust_template_foundation::server::health::HealthRegistry;
@@ -9,13 +9,7 @@ async fn start_control_server() -> (String, control::StatusReceiver) {
   let (tx, rx) = status_channel();
   let tx = Arc::new(tx);
 
-  let state = ControlState {
-    status_tx: Arc::clone(&tx),
-    health_registry: HealthRegistry::default(),
-    metrics_registry: Arc::new(Registry::new()),
-  };
-
-  let app = control::router(state);
+  let app = control::control_router(Arc::clone(&tx));
 
   let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
     .await
@@ -27,6 +21,26 @@ async fn start_control_server() -> (String, control::StatusReceiver) {
   });
 
   (format!("http://{addr}"), rx)
+}
+
+async fn start_observe_server() -> String {
+  let state = ObserveState {
+    health_registry: HealthRegistry::default(),
+    metrics_registry: Arc::new(Registry::new()),
+  };
+
+  let app = control::observe_router(state);
+
+  let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+    .await
+    .expect("bind failed");
+  let addr = listener.local_addr().unwrap();
+
+  tokio::spawn(async move {
+    axum::serve(listener, app).await.ok();
+  });
+
+  format!("http://{addr}")
 }
 
 #[tokio::test]
@@ -94,7 +108,7 @@ async fn stop_immediate_sets_status_to_stopping_immediate() {
 
 #[tokio::test]
 async fn worker_healthz_returns_200() {
-  let (base, _rx) = start_control_server().await;
+  let base = start_observe_server().await;
 
   let resp = reqwest::get(format!("{base}/healthz")).await.unwrap();
   assert_eq!(resp.status(), 200);
@@ -102,7 +116,7 @@ async fn worker_healthz_returns_200() {
 
 #[tokio::test]
 async fn worker_metrics_returns_200() {
-  let (base, _rx) = start_control_server().await;
+  let base = start_observe_server().await;
 
   let resp = reqwest::get(format!("{base}/metrics")).await.unwrap();
   assert_eq!(resp.status(), 200);

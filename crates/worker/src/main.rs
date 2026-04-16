@@ -6,7 +6,7 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use garage_queue_lib::protocol::{WorkResult, WorkerConnect};
 use garage_queue_worker::control::{
-  self, status_channel, ControlError, ControlState, WorkerStatus,
+  self, status_channel, ControlError, ObserveState, WorkerStatus,
 };
 use garage_queue_worker::delegator::HttpDelegator;
 use garage_queue_worker::health::ServerConnectivityCheck;
@@ -33,7 +33,7 @@ enum ApplicationError {
 #[tokio::main]
 async fn main() -> Result<(), ApplicationError> {
   let cli = CliRaw::parse();
-  let config = Config::from_cli_and_file(cli)
+  let mut config = Config::from_cli_and_file(cli)
     .map_err(ApplicationError::ConfigurationLoad)?;
 
   init_server_logging(config.log_level, config.log_format);
@@ -59,15 +59,27 @@ async fn main() -> Result<(), ApplicationError> {
     .register("server", ServerConnectivityCheck::new(Arc::clone(&connected)))
     .await;
 
-  let control_state = ControlState {
-    status_tx: Arc::clone(&status_tx),
+  let observe_state = ObserveState {
     health_registry,
     metrics_registry,
   };
 
-  let control_bind = config.control_bind;
+  // Extract bind addresses before moving config into the SSE loop.
+  let observe_bind =
+    std::mem::replace(&mut config.observe_bind, "127.0.0.1:0".parse().unwrap());
+  let control_bind =
+    std::mem::replace(&mut config.control_bind, "127.0.0.1:0".parse().unwrap());
+
   tokio::spawn(async move {
-    if let Err(e) = control::serve(control_bind, control_state).await {
+    if let Err(e) = control::serve_observe(observe_bind, observe_state).await {
+      error!(error = %e, "Observability server failed");
+      std::process::exit(1);
+    }
+  });
+
+  let control_tx = Arc::clone(&status_tx);
+  tokio::spawn(async move {
+    if let Err(e) = control::serve_control(control_bind, control_tx).await {
       error!(error = %e, "Control server failed");
       std::process::exit(1);
     }

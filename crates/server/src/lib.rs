@@ -1,7 +1,6 @@
 pub mod config;
 pub mod dispatch;
 pub mod intake;
-pub mod logging;
 pub mod registry;
 pub mod routes;
 pub mod state;

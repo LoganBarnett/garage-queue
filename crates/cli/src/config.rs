@@ -1,24 +1,17 @@
 use clap::Parser;
 use garage_queue_lib::{LogFormat, LogLevel};
+use rust_template_foundation::config::{
+  find_config_file, load_toml, resolve_log_settings, CommonConfigFile,
+  ConfigFileError,
+};
 use serde::Deserialize;
 use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-  #[error("Failed to read configuration file at {path:?}: {source}")]
-  FileRead {
-    path: PathBuf,
-    #[source]
-    source: std::io::Error,
-  },
-
-  #[error("Failed to parse configuration file at {path:?}: {source}")]
-  Parse {
-    path: PathBuf,
-    #[source]
-    source: toml::de::Error,
-  },
+  #[error("Failed to load configuration file: {0}")]
+  ConfigFile(#[from] ConfigFileError),
 
   #[error("Configuration validation failed: {0}")]
   Validation(String),
@@ -62,24 +55,9 @@ pub enum Command {
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ConfigFileRaw {
-  pub log_level: Option<String>,
-  pub log_format: Option<String>,
+  #[serde(flatten)]
+  pub common: CommonConfigFile,
   pub server_url: Option<String>,
-}
-
-impl ConfigFileRaw {
-  pub fn from_file(path: &PathBuf) -> Result<Self, ConfigError> {
-    let contents = std::fs::read_to_string(path).map_err(|source| {
-      ConfigError::FileRead {
-        path: path.clone(),
-        source,
-      }
-    })?;
-    toml::from_str(&contents).map_err(|source| ConfigError::Parse {
-      path: path.clone(),
-      source,
-    })
-  }
 }
 
 #[derive(Debug)]
@@ -92,35 +70,20 @@ pub struct Config {
 
 impl Config {
   pub fn from_cli_and_file(cli: CliRaw) -> Result<Self, ConfigError> {
-    let config_file = match &cli.config {
-      Some(path) => ConfigFileRaw::from_file(path)?,
-      None => {
-        let default_path = PathBuf::from("config.toml");
-        if default_path.exists() {
-          ConfigFileRaw::from_file(&default_path)?
-        } else {
-          ConfigFileRaw::default()
-        }
-      }
+    let config_path = find_config_file("garage-queue", cli.config.as_deref());
+
+    let file = match config_path {
+      Some(ref path) => load_toml::<ConfigFileRaw>(path)?,
+      None => ConfigFileRaw::default(),
     };
 
-    let log_level = cli
-      .log_level
-      .or(config_file.log_level)
-      .unwrap_or_else(|| "info".to_string())
-      .parse::<LogLevel>()
-      .map_err(|e| ConfigError::Validation(e.to_string()))?;
-
-    let log_format = cli
-      .log_format
-      .or(config_file.log_format)
-      .unwrap_or_else(|| "text".to_string())
-      .parse::<LogFormat>()
-      .map_err(|e| ConfigError::Validation(e.to_string()))?;
+    let (log_level, log_format) =
+      resolve_log_settings(cli.log_level, cli.log_format, &file.common)
+        .map_err(ConfigError::Validation)?;
 
     let server_url = cli
       .server_url
-      .or(config_file.server_url)
+      .or(file.server_url)
       .unwrap_or_else(|| "http://127.0.0.1:9090".to_string());
 
     Ok(Config {

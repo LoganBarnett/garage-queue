@@ -1,10 +1,9 @@
 mod commands;
 mod config;
-mod logging;
 
 use clap::Parser;
 use config::{CliRaw, Command, Config, ConfigError};
-use logging::init_logging;
+use rust_template_foundation::logging::init_cli_logging;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -20,7 +19,7 @@ enum ApplicationError {
 async fn main() -> Result<(), ApplicationError> {
   let cli = CliRaw::parse();
   let config = Config::from_cli_and_file(cli)?;
-  init_logging(config.log_level, config.log_format);
+  init_cli_logging(config.log_level, config.log_format);
 
   match config.command {
     Command::Health => commands::health(&config.server_url).await?,

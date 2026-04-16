@@ -1,24 +1,18 @@
 use clap::Parser;
 use garage_queue_lib::capability::WorkerCapabilities;
 use garage_queue_lib::{LogFormat, LogLevel};
+use rust_template_foundation::config::{
+  find_config_file, load_toml, resolve_log_settings, CommonCli,
+  CommonConfigFile, ConfigFileError,
+};
 use serde::Deserialize;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-  #[error("Failed to read configuration file at '{path}': {source}")]
-  FileRead {
-    path: PathBuf,
-    source: std::io::Error,
-  },
-
-  #[error("Failed to parse configuration file at '{path}': {source}")]
-  Parse {
-    path: PathBuf,
-    source: toml::de::Error,
-  },
+  #[error("Failed to load configuration file: {0}")]
+  ConfigFile(#[from] ConfigFileError),
 
   #[error("Failed to parse control bind address '{address}': {source}")]
   AddressParse {
@@ -35,22 +29,16 @@ pub enum ConfigError {
 #[derive(Debug, Parser)]
 #[command(author, version, about = "garage-queue worker")]
 pub struct CliRaw {
-  #[arg(long, env = "LOG_LEVEL")]
-  pub log_level: Option<String>,
-
-  #[arg(long, env = "LOG_FORMAT")]
-  pub log_format: Option<String>,
-
-  #[arg(short, long, env = "CONFIG_FILE")]
-  pub config: Option<PathBuf>,
+  #[command(flatten)]
+  pub common: CommonCli,
 }
 
 // ── Raw (deserialised) types ─────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ConfigFileRaw {
-  pub log_level: Option<String>,
-  pub log_format: Option<String>,
+  #[serde(flatten)]
+  pub common: CommonConfigFile,
   pub worker: Option<WorkerSectionRaw>,
   pub control: Option<ControlSectionRaw>,
   pub capabilities: Option<WorkerCapabilities>,
@@ -89,22 +77,6 @@ pub enum DelegatorConfigRaw {
   Http { url: String },
 }
 
-impl ConfigFileRaw {
-  pub fn from_file(path: &PathBuf) -> Result<Self, ConfigError> {
-    std::fs::read_to_string(path)
-      .map_err(|source| ConfigError::FileRead {
-        path: path.clone(),
-        source,
-      })
-      .and_then(|contents| {
-        toml::from_str(&contents).map_err(|source| ConfigError::Parse {
-          path: path.clone(),
-          source,
-        })
-      })
-  }
-}
-
 // ── Validated config ─────────────────────────────────────────────────────────
 
 pub struct Config {
@@ -125,30 +97,20 @@ pub enum DelegatorConfig {
 
 impl Config {
   pub fn from_cli_and_file(cli: CliRaw) -> Result<Self, ConfigError> {
-    let file = if let Some(ref path) = cli.config {
-      ConfigFileRaw::from_file(path)?
-    } else {
-      let default = PathBuf::from("config.toml");
-      if default.exists() {
-        ConfigFileRaw::from_file(&default)?
-      } else {
-        ConfigFileRaw::default()
-      }
+    let config_path =
+      find_config_file("garage-queue", cli.common.config.as_deref());
+
+    let file = match config_path {
+      Some(ref path) => load_toml::<ConfigFileRaw>(path)?,
+      None => ConfigFileRaw::default(),
     };
 
-    let log_level = cli
-      .log_level
-      .or_else(|| file.log_level.clone())
-      .unwrap_or_else(|| "info".to_string())
-      .parse::<LogLevel>()
-      .map_err(|e| ConfigError::Validation(e.to_string()))?;
-
-    let log_format = cli
-      .log_format
-      .or_else(|| file.log_format.clone())
-      .unwrap_or_else(|| "text".to_string())
-      .parse::<LogFormat>()
-      .map_err(|e| ConfigError::Validation(e.to_string()))?;
+    let (log_level, log_format) = resolve_log_settings(
+      cli.common.log_level,
+      cli.common.log_format,
+      &file.common,
+    )
+    .map_err(ConfigError::Validation)?;
 
     let worker = file.worker.unwrap_or_else(|| WorkerSectionRaw {
       server_url: None,

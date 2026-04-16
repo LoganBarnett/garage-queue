@@ -1,18 +1,21 @@
-mod systemd;
-
 use garage_queue_server::{
   build_router,
   config::{CliRaw, Config, ConfigError},
   intake::{CompiledQueue, IntakeError},
-  logging::init_logging,
   state::AppState,
 };
 
 use clap::Parser;
+use rust_template_foundation::{
+  logging::init_server_logging,
+  server::{
+    shutdown::shutdown_signal,
+    systemd::{notify_ready, spawn_watchdog},
+  },
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::signal;
 use tracing::info;
 
 #[derive(Debug, Error)]
@@ -39,7 +42,7 @@ async fn main() -> Result<(), ApplicationError> {
   let config = Config::from_cli_and_file(cli)
     .map_err(ApplicationError::ConfigurationLoad)?;
 
-  init_logging(config.log_level, config.log_format);
+  init_server_logging(config.log_level, config.log_format);
   info!("Starting garage-queue-server");
 
   let compiled_queues = build_compiled_queues(&config)?;
@@ -63,8 +66,8 @@ async fn main() -> Result<(), ApplicationError> {
 
   info!(address = %config.listen_address, "Listening");
 
-  systemd::notify_ready();
-  systemd::spawn_watchdog();
+  notify_ready();
+  spawn_watchdog();
 
   tokio_listener::axum07::serve(listener, app.into_make_service())
     .with_graceful_shutdown(shutdown_signal())
@@ -90,31 +93,4 @@ fn build_compiled_queues(
         })
     })
     .collect()
-}
-
-async fn shutdown_signal() {
-  let ctrl_c = async {
-    // Unrecoverable: if the OS rejects signal registration the process
-    // cannot shut down gracefully.
-    signal::ctrl_c()
-      .await
-      .expect("failed to install Ctrl+C handler");
-  };
-
-  #[cfg(unix)]
-  let terminate = async {
-    // Unrecoverable: same rationale as Ctrl+C above.
-    signal::unix::signal(signal::unix::SignalKind::terminate())
-      .expect("failed to install SIGTERM handler")
-      .recv()
-      .await;
-  };
-
-  #[cfg(not(unix))]
-  let terminate = std::future::pending::<()>();
-
-  tokio::select! {
-      _ = ctrl_c => info!("Received Ctrl+C, shutting down"),
-      _ = terminate => info!("Received SIGTERM, shutting down"),
-  }
 }

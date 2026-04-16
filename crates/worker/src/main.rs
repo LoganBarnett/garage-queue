@@ -1,5 +1,4 @@
 mod config;
-mod logging;
 
 use clap::Parser;
 use config::{CliRaw, Config, ConfigError, DelegatorConfig};
@@ -10,6 +9,7 @@ use garage_queue_worker::control::{
   self, status_channel, ControlError, WorkerStatus,
 };
 use garage_queue_worker::delegator::HttpDelegator;
+use rust_template_foundation::logging::init_server_logging;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
@@ -31,7 +31,7 @@ async fn main() -> Result<(), ApplicationError> {
   let config = Config::from_cli_and_file(cli)
     .map_err(ApplicationError::ConfigurationLoad)?;
 
-  logging::init_logging(config.log_level, config.log_format);
+  init_server_logging(config.log_level, config.log_format);
   info!(worker_id = %config.worker_id, "Starting garage-queue-worker");
 
   let (status_tx, status_rx) = status_channel();

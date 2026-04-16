@@ -36,8 +36,8 @@ toml = "0.8"
 # Error handling
 thiserror = "2.0"
 
-# Systemd integration
-sd-notify = "0.4"
+# Shared infrastructure from rust-template
+rust-template-foundation = { git = "ssh://git@gitea.proton:2222/logan/rust-template.git", features = ["cli", "server"] }
 
 # Web framework
 axum = "0.7"

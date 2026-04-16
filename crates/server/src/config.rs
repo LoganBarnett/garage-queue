@@ -1,5 +1,9 @@
 use clap::Parser;
 use garage_queue_lib::{LogFormat, LogLevel};
+use rust_template_foundation::config::{
+  find_config_file, load_toml, resolve_log_settings, CommonCli,
+  CommonConfigFile, ConfigFileError,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -8,17 +12,8 @@ use tokio_listener::ListenerAddress;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-  #[error("Failed to read configuration file at '{path}': {source}")]
-  FileRead {
-    path: PathBuf,
-    source: std::io::Error,
-  },
-
-  #[error("Failed to parse configuration file at '{path}': {source}")]
-  Parse {
-    path: PathBuf,
-    source: toml::de::Error,
-  },
+  #[error("Failed to load configuration file: {0}")]
+  ConfigFile(#[from] ConfigFileError),
 
   #[error("Invalid listen address '{address}': {reason}")]
   InvalidListenAddress {
@@ -57,22 +52,16 @@ pub enum ConfigError {
 #[derive(Debug, Parser)]
 #[command(author, version, about = "garage-queue server")]
 pub struct CliRaw {
-  #[arg(long, env = "LOG_LEVEL")]
-  pub log_level: Option<String>,
-
-  #[arg(long, env = "LOG_FORMAT")]
-  pub log_format: Option<String>,
-
-  #[arg(short, long, env = "CONFIG_FILE")]
-  pub config: Option<PathBuf>,
+  #[command(flatten)]
+  pub common: CommonCli,
 }
 
 // ── Raw (deserialised) types ─────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ConfigFileRaw {
-  pub log_level: Option<String>,
-  pub log_format: Option<String>,
+  #[serde(flatten)]
+  pub common: CommonConfigFile,
   pub server: Option<ServerSectionRaw>,
 
   #[serde(default)]
@@ -153,22 +142,6 @@ pub enum ExtractorKindRaw {
   Scalar,
 }
 
-impl ConfigFileRaw {
-  pub fn from_file(path: &PathBuf) -> Result<Self, ConfigError> {
-    std::fs::read_to_string(path)
-      .map_err(|source| ConfigError::FileRead {
-        path: path.clone(),
-        source,
-      })
-      .and_then(|contents| {
-        toml::from_str(&contents).map_err(|source| ConfigError::Parse {
-          path: path.clone(),
-          source,
-        })
-      })
-  }
-}
-
 // ── Validated config ─────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -232,30 +205,20 @@ pub enum JqSource {
 
 impl Config {
   pub fn from_cli_and_file(cli: CliRaw) -> Result<Self, ConfigError> {
-    let file = if let Some(ref path) = cli.config {
-      ConfigFileRaw::from_file(path)?
-    } else {
-      let default = PathBuf::from("config.toml");
-      if default.exists() {
-        ConfigFileRaw::from_file(&default)?
-      } else {
-        ConfigFileRaw::default()
-      }
+    let config_path =
+      find_config_file("garage-queue", cli.common.config.as_deref());
+
+    let file = match config_path {
+      Some(ref path) => load_toml::<ConfigFileRaw>(path)?,
+      None => ConfigFileRaw::default(),
     };
 
-    let log_level = cli
-      .log_level
-      .or_else(|| file.log_level.clone())
-      .unwrap_or_else(|| "info".to_string())
-      .parse::<LogLevel>()
-      .map_err(|e| ConfigError::Validation(e.to_string()))?;
-
-    let log_format = cli
-      .log_format
-      .or_else(|| file.log_format.clone())
-      .unwrap_or_else(|| "text".to_string())
-      .parse::<LogFormat>()
-      .map_err(|e| ConfigError::Validation(e.to_string()))?;
+    let (log_level, log_format) = resolve_log_settings(
+      cli.common.log_level,
+      cli.common.log_format,
+      &file.common,
+    )
+    .map_err(ConfigError::Validation)?;
 
     let server = file
       .server
@@ -415,28 +378,30 @@ mod tests {
 
   fn cli_with_config(path: &str) -> CliRaw {
     CliRaw {
-      log_level: None,
-      log_format: None,
-      config: Some(PathBuf::from(path)),
+      common: CommonCli {
+        log_level: None,
+        log_format: None,
+        config: Some(PathBuf::from(path)),
+      },
     }
   }
 
   #[test]
-  fn missing_config_file_returns_file_read_error() {
+  fn missing_config_file_returns_config_file_error() {
     let cli = cli_with_config("/nonexistent/config.toml");
     let err = Config::from_cli_and_file(cli).unwrap_err();
-    assert!(matches!(err, ConfigError::FileRead { .. }));
+    assert!(matches!(err, ConfigError::ConfigFile(_)));
   }
 
   #[test]
-  fn invalid_toml_returns_parse_error() {
+  fn invalid_toml_returns_config_file_error() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("bad.toml");
     std::fs::write(&path, "this is {{not valid toml").unwrap();
 
     let cli = cli_with_config(path.to_str().unwrap());
     let err = Config::from_cli_and_file(cli).unwrap_err();
-    assert!(matches!(err, ConfigError::Parse { .. }));
+    assert!(matches!(err, ConfigError::ConfigFile(_)));
   }
 
   #[test]
@@ -508,9 +473,11 @@ capability = "model"
     std::fs::write(&path, "log_level = \"warn\"").unwrap();
 
     let cli = CliRaw {
-      log_level: Some("debug".to_string()),
-      log_format: None,
-      config: Some(path),
+      common: CommonCli {
+        log_level: Some("debug".to_string()),
+        log_format: None,
+        config: Some(path),
+      },
     };
     let config = Config::from_cli_and_file(cli).unwrap();
     assert!(matches!(config.log_level, LogLevel::Debug));

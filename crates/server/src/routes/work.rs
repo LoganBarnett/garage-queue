@@ -1,5 +1,5 @@
 use crate::dispatch::handle_result;
-use crate::state::AppState;
+use crate::web_base::AppState;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use garage_queue_lib::protocol::WorkResult;
 use tracing::warn;

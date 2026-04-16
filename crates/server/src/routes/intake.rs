@@ -1,5 +1,5 @@
 use crate::dispatch::try_dispatch_all;
-use crate::state::{AppState, QueueEntry};
+use crate::web_base::{AppState, QueueEntry};
 use axum::{
   extract::{OriginalUri, State},
   http::StatusCode,

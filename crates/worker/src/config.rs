@@ -112,7 +112,7 @@ impl Config {
     )
     .map_err(ConfigError::Validation)?;
 
-    let worker = file.worker.unwrap_or_else(|| WorkerSectionRaw {
+    let worker = file.worker.unwrap_or(WorkerSectionRaw {
       server_url: None,
       id: None,
       reconnect_interval_ms: None,

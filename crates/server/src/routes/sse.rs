@@ -1,5 +1,5 @@
 use crate::dispatch::{handle_disconnect, try_dispatch};
-use crate::state::AppState;
+use crate::web_base::AppState;
 use axum::{
   extract::State,
   http::StatusCode,
@@ -87,7 +87,7 @@ struct CleanupStream {
 }
 
 impl futures_util::Stream for CleanupStream {
-  type Item = Result<Event, axum::Error>;
+  type Item = Result<Event, axum::BoxError>;
 
   fn poll_next(
     self: Pin<&mut Self>,

@@ -2,7 +2,7 @@ use garage_queue_server::{
   build_router,
   config::{CliRaw, Config, ConfigError},
   intake::{CompiledQueue, IntakeError},
-  state::AppState,
+  AppState,
 };
 
 use clap::Parser;
@@ -69,7 +69,7 @@ async fn main() -> Result<(), ApplicationError> {
   notify_ready();
   spawn_watchdog();
 
-  tokio_listener::axum07::serve(listener, app.into_make_service())
+  axum::serve(listener, app.into_make_service())
     .with_graceful_shutdown(shutdown_signal())
     .await
     .map_err(ApplicationError::ServerRuntime)?;

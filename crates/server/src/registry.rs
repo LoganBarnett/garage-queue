@@ -40,15 +40,14 @@ impl ConnectedWorker {
 }
 
 /// Tracks all workers with active SSE connections.
+#[derive(Default)]
 pub struct WorkerRegistry {
   workers: HashMap<String, ConnectedWorker>,
 }
 
 impl WorkerRegistry {
   pub fn new() -> Self {
-    Self {
-      workers: HashMap::new(),
-    }
+    Self::default()
   }
 
   pub fn register(

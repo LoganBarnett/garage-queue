@@ -17,7 +17,6 @@ repository = "https://github.com/yourusername/garage-queue"
 [workspace.dependencies]
 # Logging and tracing
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt"] }
 
 # Utilities
 # tap - Enables method chaining and reduces superfluous local variables
@@ -40,11 +39,18 @@ thiserror = "2.0"
 rust-template-foundation = { git = "ssh://git@gitea.proton:2222/logan/rust-template.git", features = ["cli", "server"] }
 
 # Web framework
-axum = "0.7"
+axum = "0.8"
 tokio = { version = "1.41", features = ["full"] }
-tokio-listener = { version = "0.5", features = ["axum07"] }
+tokio-listener = { version = "0.5", features = ["axum08"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
+
+# Metrics
+prometheus = "0.13"
+
+# OpenAPI documentation
+aide = { version = "0.15", features = ["axum", "axum-json", "axum-query", "scalar", "macros"] }
+schemars = "0.9"
 
 # HTTP client (worker delegator, SSE stream support)
 reqwest = { version = "0.12", features = ["json", "stream"] }

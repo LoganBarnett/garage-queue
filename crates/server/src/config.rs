@@ -54,6 +54,9 @@ pub enum ConfigError {
 pub struct CliRaw {
   #[command(flatten)]
   pub common: CommonCli,
+
+  #[arg(long, env = "LISTEN")]
+  pub listen: Option<String>,
 }
 
 // ── Raw (deserialised) types ─────────────────────────────────────────────────
@@ -220,12 +223,11 @@ impl Config {
     )
     .map_err(ConfigError::Validation)?;
 
-    let server = file
-      .server
-      .unwrap_or_else(|| ServerSectionRaw { listen: None });
+    let server = file.server.unwrap_or(ServerSectionRaw { listen: None });
 
-    let listen_str = server
+    let listen_str = cli
       .listen
+      .or(server.listen)
       .unwrap_or_else(|| "127.0.0.1:9090".to_string());
     let listen_address =
       listen_str.parse::<ListenerAddress>().map_err(|reason| {
@@ -383,6 +385,7 @@ mod tests {
         log_format: None,
         config: Some(PathBuf::from(path)),
       },
+      listen: None,
     }
   }
 
@@ -478,6 +481,7 @@ capability = "model"
         log_format: None,
         config: Some(path),
       },
+      listen: None,
     };
     let config = Config::from_cli_and_file(cli).unwrap();
     assert!(matches!(config.log_level, LogLevel::Debug));

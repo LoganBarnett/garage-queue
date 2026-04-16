@@ -17,7 +17,7 @@ use garage_queue_server::{
     QueueMode,
   },
   intake::CompiledQueue,
-  state::AppState,
+  AppState,
 };
 use serde_json::json;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
@@ -1028,4 +1028,42 @@ async fn exclusive_items_dispatched_fifo() {
     let resp = h.await.unwrap();
     assert_eq!(resp.status(), 200);
   }
+}
+
+// ── Server compliance endpoint tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn metrics_returns_200() {
+  let server = TestServer::start().await;
+
+  let resp = reqwest::get(format!("http://{}/metrics", server.addr))
+    .await
+    .unwrap();
+
+  assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn openapi_spec_returns_valid_json() {
+  let server = TestServer::start().await;
+
+  let resp =
+    reqwest::get(format!("http://{}/api-docs/openapi.json", server.addr))
+      .await
+      .unwrap();
+
+  assert_eq!(resp.status(), 200);
+  let body: serde_json::Value = resp.json().await.unwrap();
+  assert!(body.is_object(), "OpenAPI spec should be a JSON object");
+}
+
+#[tokio::test]
+async fn scalar_ui_returns_200() {
+  let server = TestServer::start().await;
+
+  let resp = reqwest::get(format!("http://{}/scalar", server.addr))
+    .await
+    .unwrap();
+
+  assert_eq!(resp.status(), 200);
 }

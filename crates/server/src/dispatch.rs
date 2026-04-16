@@ -1,5 +1,5 @@
 use crate::config::QueueMode;
-use crate::state::AppState;
+use crate::web_base::AppState;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -252,7 +252,7 @@ pub async fn handle_disconnect(state: &AppState, worker_id: &str) {
 
 /// Check if an item has been delivered to enough workers.
 fn is_delivery_saturated(
-  entry: &crate::state::QueueEntry,
+  entry: &crate::web_base::QueueEntry,
   registry: &crate::registry::WorkerRegistry,
 ) -> bool {
   match entry.mode {
@@ -267,7 +267,7 @@ fn is_delivery_saturated(
 }
 
 /// Check if the completion condition is met for an item.
-fn is_completion_met(entry: &crate::state::QueueEntry) -> bool {
+fn is_completion_met(entry: &crate::web_base::QueueEntry) -> bool {
   match entry.mode {
     QueueMode::Exclusive => !entry.completed.is_empty(),
     QueueMode::Broadcast => {

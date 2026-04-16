@@ -41,7 +41,7 @@ rust-template-foundation = { git = "ssh://git@gitea.proton:2222/logan/rust-templ
 # Web framework
 axum = "0.8"
 tokio = { version = "1.41", features = ["full"] }
-tokio-listener = { version = "0.5", features = ["axum08"] }
+tokio-listener = { version = "0.5", features = ["axum08", "unix"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 

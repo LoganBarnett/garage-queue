@@ -198,12 +198,6 @@ in
 
     users.groups.${cfg.group} = lib.mkDefault { };
 
-    # Create runtime directories for workers using Unix domain sockets.
-    systemd.tmpfiles.rules = lib.concatLists (lib.mapAttrsToList (name: wCfg:
-      lib.optional (wCfg.control.socket != null || wCfg.observe.socket != null)
-        "d ${runtimeDir name} 0750 ${cfg.user} ${cfg.group} -"
-    ) enabledWorkers);
-
     systemd.services = lib.mapAttrs' (name: wCfg:
       lib.nameValuePair "garage-queue-worker-${name}" {
         description = "garage-queue worker (${name})";
@@ -228,6 +222,16 @@ in
           ProtectSystem = "strict";
           ProtectHome = true;
           PrivateTmp = true;
+          # RuntimeDirectory creates /run/garage-queue-worker-<name> owned by
+          # the service user and exempts it from ProtectSystem=strict so the
+          # worker can bind Unix domain sockets there.  The directory persists
+          # for the lifetime of the service.
+          RuntimeDirectory = lib.mkIf
+            (wCfg.control.socket != null || wCfg.observe.socket != null)
+            "garage-queue-worker-${name}";
+          RuntimeDirectoryMode = lib.mkIf
+            (wCfg.control.socket != null || wCfg.observe.socket != null)
+            "0750";
         };
       }
     ) enabledWorkers;

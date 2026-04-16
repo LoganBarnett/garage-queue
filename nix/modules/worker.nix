@@ -26,7 +26,7 @@ let
   # Build the listen address string for a server endpoint from its
   # socket/host/port options.
   listenValue = opts:
-    if opts.socket != null then "unix:${opts.socket}"
+    if opts.socket != null then opts.socket
     else "${opts.host}:${toString opts.port}";
 
   # Per-instance runtime directory for Unix domain sockets.

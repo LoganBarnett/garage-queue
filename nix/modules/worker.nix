@@ -23,8 +23,19 @@ let
   cfg = config.services.garage-queue-worker;
   settingsFormat = pkgs.formats.toml { };
 
+  # Build the listen address string for a server endpoint from its
+  # socket/host/port options.
+  listenValue = opts:
+    if opts.socket != null then "unix:${opts.socket}"
+    else "${opts.host}:${toString opts.port}";
+
+  # Per-instance runtime directory for Unix domain sockets.
+  runtimeDir = name: "/run/garage-queue-worker-${name}";
+
   # Resolve the final settings for a named worker by merging any
-  # integration-generated fragments on top of the raw settings.
+  # integration-generated fragments on top of the raw settings, then
+  # inject per-instance listen addresses for the control and observe
+  # servers.
   resolvedSettings = name: wCfg:
     let
       ollamaCfg = config.services.ollama;
@@ -36,10 +47,42 @@ let
           url = "http://${ollamaCfg.host}:${toString ollamaCfg.port}/api/generate";
         };
       };
+      listenSettings = {
+        control.listen_address = listenValue wCfg.control;
+        observe.listen_address = listenValue wCfg.observe;
+      };
     in
-    lib.recursiveUpdate (lib.recursiveUpdate baseSettings wCfg.settings) ollamaSettings;
+    lib.recursiveUpdate
+      (lib.recursiveUpdate
+        (lib.recursiveUpdate baseSettings wCfg.settings)
+        ollamaSettings)
+      listenSettings;
 
   enabledWorkers = lib.filterAttrs (_: wCfg: wCfg.enable) cfg.workers;
+
+  # Shared option definitions for a listen endpoint (socket or TCP).
+  listenOptions = { defaultSocket, defaultPort }: {
+    socket = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = defaultSocket;
+      description = ''
+        Path for the Unix domain socket.  When set, the host and port
+        options are ignored.  Set to null to use TCP instead.
+      '';
+    };
+
+    host = lib.mkOption {
+      type = lib.types.str;
+      default = "127.0.0.1";
+      description = "IP address to bind to.  Ignored when socket is set.";
+    };
+
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = defaultPort;
+      description = "TCP port to listen on.  Ignored when socket is set.";
+    };
+  };
 in
 {
   options.services.garage-queue-worker = {
@@ -63,49 +106,60 @@ in
     };
 
     workers = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options = {
-          enable = lib.mkEnableOption "this garage-queue worker instance";
+      type = lib.types.attrsOf (lib.types.submodule (
+        { name, ... }: {
+          options = {
+            enable = lib.mkEnableOption "this garage-queue worker instance";
 
-          # The settings attrset is converted to TOML and passed to the
-          # worker via --config.  Its structure mirrors the worker
-          # config.toml directly.
-          settings = lib.mkOption {
-            type = settingsFormat.type;
-            default = { };
-            description = ''
-              Configuration written verbatim to this worker's TOML config
-              file.  Mirrors the config.toml structure.  The delegator
-              section is required unless integrations.ollama.enable
-              provides it.
-            '';
-            example = lib.literalExpression ''
-              {
-                worker = {
-                  server_url = "http://192.168.1.10:9090";
-                  reconnect_interval_ms = 1000;
-                };
-                control = {
-                  host = "127.0.0.1";
-                  port = 9091;
-                };
-                capabilities.scalars.vram_mb = 16384;
-                concurrency = {
-                  default = 1;
-                  ollama-tags = 4;
-                };
-              }
+            # The settings attrset is converted to TOML and passed to the
+            # worker via --config.  Its structure mirrors the worker
+            # config.toml directly.
+            settings = lib.mkOption {
+              type = settingsFormat.type;
+              default = { };
+              description = ''
+                Configuration written verbatim to this worker's TOML config
+                file.  Mirrors the config.toml structure.  The delegator
+                section is required unless integrations.ollama.enable
+                provides it.
+
+                The control and observe listen addresses are managed by
+                their respective options below and should not be set here.
+              '';
+              example = lib.literalExpression ''
+                {
+                  worker = {
+                    server_url = "http://192.168.1.10:9090";
+                    reconnect_interval_ms = 1000;
+                  };
+                  capabilities.scalars.vram_mb = 16384;
+                  concurrency = {
+                    default = 1;
+                    ollama-tags = 4;
+                  };
+                }
+              '';
+            };
+
+            control = listenOptions {
+              defaultSocket = "${runtimeDir name}/control.sock";
+              defaultPort = 9091;
+            };
+
+            observe = listenOptions {
+              defaultSocket = "${runtimeDir name}/observe.sock";
+              defaultPort = 9092;
+            };
+
+            integrations.ollama.enable = lib.mkEnableOption ''
+              Ollama integration for this worker.  When enabled,
+              capabilities.tags is populated from
+              services.ollama.loadModels and the delegator is set to the
+              local Ollama HTTP endpoint
             '';
           };
-
-          integrations.ollama.enable = lib.mkEnableOption ''
-            Ollama integration for this worker.  When enabled,
-            capabilities.tags is populated from
-            services.ollama.loadModels and the delegator is set to the
-            local Ollama HTTP endpoint
-          '';
-        };
-      });
+        }
+      ));
       default = { };
       description = ''
         Named worker instances.  Each entry produces a separate systemd
@@ -143,6 +197,12 @@ in
     };
 
     users.groups.${cfg.group} = lib.mkDefault { };
+
+    # Create runtime directories for workers using Unix domain sockets.
+    systemd.tmpfiles.rules = lib.concatLists (lib.mapAttrsToList (name: wCfg:
+      lib.optional (wCfg.control.socket != null || wCfg.observe.socket != null)
+        "d ${runtimeDir name} 0750 ${cfg.user} ${cfg.group} -"
+    ) enabledWorkers);
 
     systemd.services = lib.mapAttrs' (name: wCfg:
       lib.nameValuePair "garage-queue-worker-${name}" {

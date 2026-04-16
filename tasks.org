@@ -6,3 +6,13 @@
 Removed as part of the unified queue model refactoring.  All NATS references
 (async-nats dep, nats-server dev shell, persist_to_nats, jetstream field,
 nats_url config, TestNats fixture) have been deleted.
+
+* DONE Add ~/healthz~ endpoint to garage-queue-worker control server
+
+The server already has a ~/healthz~ endpoint (=routes/health.rs=) but the worker's
+control server (=crates/worker/src/control.rs=) only exposes ~/control/{pause,resume,stop,stop/immediate}~.
+
+A ~/healthz~ endpoint on the worker should report whether the SSE connection to the
+server is established, not just that the process is alive.  This enables goss health
+checks that can detect the "process running but stuck" failure mode — e.g. when a
+delegation error leaves the worker unable to process items without a restart.

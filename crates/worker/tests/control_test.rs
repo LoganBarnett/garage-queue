@@ -1,11 +1,21 @@
-use garage_queue_worker::control::{self, status_channel, WorkerStatus};
+use garage_queue_worker::control::{
+  self, status_channel, ControlState, WorkerStatus,
+};
+use prometheus::Registry;
+use rust_template_foundation::server::health::HealthRegistry;
 use std::sync::Arc;
 
 async fn start_control_server() -> (String, control::StatusReceiver) {
   let (tx, rx) = status_channel();
   let tx = Arc::new(tx);
 
-  let app = control::router(Arc::clone(&tx));
+  let state = ControlState {
+    status_tx: Arc::clone(&tx),
+    health_registry: HealthRegistry::default(),
+    metrics_registry: Arc::new(Registry::new()),
+  };
+
+  let app = control::router(state);
 
   let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
     .await
@@ -80,4 +90,20 @@ async fn stop_immediate_sets_status_to_stopping_immediate() {
 
   assert_eq!(resp.status(), 200);
   assert_eq!(*rx.borrow(), WorkerStatus::StoppingImmediate);
+}
+
+#[tokio::test]
+async fn worker_healthz_returns_200() {
+  let (base, _rx) = start_control_server().await;
+
+  let resp = reqwest::get(format!("{base}/healthz")).await.unwrap();
+  assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn worker_metrics_returns_200() {
+  let (base, _rx) = start_control_server().await;
+
+  let resp = reqwest::get(format!("{base}/metrics")).await.unwrap();
+  assert_eq!(resp.status(), 200);
 }

@@ -49,6 +49,8 @@ pub async fn connect(
     }
   }
 
+  state.metrics.workers_connected.inc();
+
   info!(
     worker_id = %body.worker_id,
     tags = ?body.capabilities.tags,
@@ -113,10 +115,19 @@ impl Drop for CleanupStream {
       (self.state.take(), self.worker_id.take())
     {
       tokio::spawn(async move {
+        // Subtract this worker's in-flight count from the global gauge
+        // before deregistering removes the tracking data.
         {
           let mut registry = state.registry.lock().await;
+          if let Some(worker) = registry.get(&worker_id) {
+            let total_in_flight: i64 =
+              worker.in_flight.values().sum::<usize>() as i64;
+            state.metrics.items_in_flight.sub(total_in_flight);
+          }
           registry.deregister(&worker_id);
         }
+
+        state.metrics.workers_connected.dec();
 
         info!(
           worker_id = %worker_id,

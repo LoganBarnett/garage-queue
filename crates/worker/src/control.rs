@@ -1,6 +1,14 @@
 use axum::{
-  extract::State, http::StatusCode, response::IntoResponse, routing::post,
+  extract::{FromRef, State},
+  http::StatusCode,
+  response::IntoResponse,
+  routing::{get, post},
   Router,
+};
+use prometheus::Registry;
+use rust_template_foundation::server::{
+  health::{healthz_handler, HealthRegistry},
+  metrics::metrics_handler,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,15 +48,44 @@ pub fn status_channel() -> (StatusSender, StatusReceiver) {
   watch::channel(WorkerStatus::Running)
 }
 
+/// Composite state for the control server, holding the status channel
+/// alongside health and metrics registries.
+#[derive(Clone)]
+pub struct ControlState {
+  pub status_tx: Arc<StatusSender>,
+  pub health_registry: HealthRegistry,
+  pub metrics_registry: Arc<Registry>,
+}
+
+impl FromRef<ControlState> for Arc<StatusSender> {
+  fn from_ref(state: &ControlState) -> Self {
+    state.status_tx.clone()
+  }
+}
+
+impl FromRef<ControlState> for HealthRegistry {
+  fn from_ref(state: &ControlState) -> Self {
+    state.health_registry.clone()
+  }
+}
+
+impl FromRef<ControlState> for Arc<Registry> {
+  fn from_ref(state: &ControlState) -> Self {
+    state.metrics_registry.clone()
+  }
+}
+
 /// Builds the control server router.  Separated from `serve` so that tests can
 /// mount the router on an ephemeral listener without going through `serve`.
-pub fn router(tx: Arc<StatusSender>) -> Router {
+pub fn router(state: ControlState) -> Router {
   Router::new()
+    .route("/healthz", get(healthz_handler))
+    .route("/metrics", get(metrics_handler))
     .route("/control/pause", post(pause))
     .route("/control/resume", post(resume))
     .route("/control/stop", post(stop_graceful))
     .route("/control/stop/immediate", post(stop_immediate))
-    .with_state(tx)
+    .with_state(state)
 }
 
 /// Starts the local control HTTP server.  This server is intentionally bound
@@ -56,9 +93,9 @@ pub fn router(tx: Arc<StatusSender>) -> Router {
 /// sytter) running on the same host.
 pub async fn serve(
   bind: SocketAddr,
-  tx: Arc<StatusSender>,
+  state: ControlState,
 ) -> Result<(), ControlError> {
-  let app = router(tx);
+  let app = router(state);
 
   let listener =
     tokio::net::TcpListener::bind(bind)

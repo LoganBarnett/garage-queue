@@ -50,6 +50,7 @@ async fn main() -> Result<(), ApplicationError> {
 
   let config = Arc::new(config);
   let state = AppState::new(Arc::clone(&config), compiled_queues);
+  state.register_health_checks().await;
 
   let app = build_router(state, &config);
 

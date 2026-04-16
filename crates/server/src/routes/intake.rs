@@ -8,7 +8,7 @@ use axum::{
 };
 use garage_queue_lib::protocol::QueueItem;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tracing::{error, info};
 use uuid::Uuid;
@@ -130,12 +130,23 @@ pub async fn handle_intake(
     let entry = QueueEntry {
       item,
       mode,
+      enqueued_at: Instant::now(),
       delivered: HashSet::new(),
       completed: HashMap::new(),
       producer_tx: Some(tx),
     };
     let mut queue = state.queue.lock().await;
     queue.insert(item_id, entry);
+    state
+      .metrics
+      .items_enqueued_total
+      .with_label_values(&[&queue_name])
+      .inc();
+    state
+      .metrics
+      .queue_depth
+      .with_label_values(&[&queue_name])
+      .inc();
   }
 
   // Try to dispatch to all ready workers.
@@ -153,6 +164,11 @@ pub async fn handle_intake(
         );
         // Clean up the queue entry on timeout.
         state.queue.lock().await.shift_remove(&item_id);
+        state
+          .metrics
+          .queue_depth
+          .with_label_values(&[&queue_name])
+          .dec();
         return (
           StatusCode::GATEWAY_TIMEOUT,
           Json(serde_json::json!({

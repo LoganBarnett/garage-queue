@@ -616,6 +616,7 @@ dependencies = [
  "eventsource-stream",
  "futures-util",
  "garage-queue-lib",
+ "prometheus",
  "reqwest",
  "rust-template-foundation",
  "serde",

@@ -1,5 +1,7 @@
 use crate::config::{Config, Method, QueueMode};
+use crate::health::WorkerConnectivityCheck;
 use crate::intake::CompiledQueue;
+use crate::metrics::ServerMetrics;
 use crate::registry::WorkerRegistry;
 use crate::routes;
 use aide::axum::ApiRouter;
@@ -17,6 +19,7 @@ use rust_template_foundation::server::{
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{oneshot, Mutex, RwLock};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -36,6 +39,8 @@ pub struct LiveConfig {
 pub struct QueueEntry {
   pub item: QueueItem,
   pub mode: QueueMode,
+  /// When this item was enqueued, for duration metrics.
+  pub enqueued_at: Instant,
   /// Worker IDs to which this item has been sent.
   pub delivered: HashSet<String>,
   /// Worker IDs that have responded, with their response values.
@@ -61,6 +66,9 @@ pub struct AppState {
 
   /// Prometheus metrics registry consumed by the /metrics handler.
   pub metrics_registry: Arc<Registry>,
+
+  /// Application-level Prometheus metrics.
+  pub metrics: ServerMetrics,
 }
 
 impl AppState {
@@ -68,6 +76,8 @@ impl AppState {
     config: Arc<Config>,
     compiled_queues: HashMap<String, CompiledQueue>,
   ) -> Self {
+    let metrics_registry = Arc::new(Registry::new());
+    let metrics = ServerMetrics::register(&metrics_registry);
     Self {
       live: Arc::new(RwLock::new(LiveConfig {
         config,
@@ -76,8 +86,21 @@ impl AppState {
       queue: Arc::new(Mutex::new(IndexMap::new())),
       registry: Arc::new(Mutex::new(WorkerRegistry::new())),
       health_registry: HealthRegistry::default(),
-      metrics_registry: Arc::new(Registry::new()),
+      metrics_registry,
+      metrics,
     }
+  }
+
+  /// Register health checks that depend on metrics state.  Separate from
+  /// `new` because `HealthRegistry::register` is async.
+  pub async fn register_health_checks(&self) {
+    self
+      .health_registry
+      .register(
+        "workers",
+        WorkerConnectivityCheck::new(self.metrics.workers_connected.clone()),
+      )
+      .await;
   }
 }
 

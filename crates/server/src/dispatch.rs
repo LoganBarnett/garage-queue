@@ -95,6 +95,8 @@ async fn try_dispatch_one(state: &AppState, worker_id: &str) -> bool {
     return false;
   }
 
+  state.metrics.items_in_flight.inc();
+
   info!(
     item_id = %item_id,
     worker_id = %worker_id,
@@ -150,6 +152,7 @@ pub async fn handle_result(
       worker.decrement_in_flight(&queue_name);
     }
   }
+  state.metrics.items_in_flight.dec();
 
   if should_complete {
     complete_item(state, item_id).await;
@@ -176,6 +179,23 @@ async fn complete_item(state: &AppState, item_id: Uuid) {
   };
 
   let Some(entry) = entry else { return };
+
+  let queue_name = &entry.item.queue;
+  state
+    .metrics
+    .queue_depth
+    .with_label_values(&[queue_name])
+    .dec();
+  state
+    .metrics
+    .items_completed_total
+    .with_label_values(&[queue_name])
+    .inc();
+  state
+    .metrics
+    .item_duration_seconds
+    .with_label_values(&[queue_name])
+    .observe(entry.enqueued_at.elapsed().as_secs_f64());
 
   let result = match entry.mode {
     QueueMode::Exclusive => {

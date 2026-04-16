@@ -43,6 +43,7 @@ impl TestServer {
 
     let config = Arc::new(config);
     let state = AppState::new(Arc::clone(&config), compiled_queues);
+    state.register_health_checks().await;
     let app = build_router(state, &config);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -1066,4 +1067,116 @@ async fn scalar_ui_returns_200() {
     .unwrap();
 
   assert_eq!(resp.status(), 200);
+}
+
+// ── Health and metrics tests ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn healthz_degraded_when_no_workers() {
+  let server = TestServer::start().await;
+
+  let resp = reqwest::get(format!("http://{}/healthz", server.addr))
+    .await
+    .unwrap();
+
+  assert_eq!(resp.status(), 200);
+  let body: serde_json::Value = resp.json().await.unwrap();
+  assert_eq!(body["status"], "degraded");
+}
+
+#[tokio::test]
+async fn healthz_healthy_when_worker_connected() {
+  let server = TestServer::start().await;
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Connect a worker so the health check sees workers_connected > 0.
+  let _sse = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "health-worker".into(),
+      capabilities: WorkerCapabilities::default(),
+      concurrency: None,
+    })
+    .send()
+    .await
+    .unwrap();
+
+  // Small delay to ensure registration completes.
+  tokio::time::sleep(Duration::from_millis(50)).await;
+
+  let resp = reqwest::get(format!("{base}/healthz")).await.unwrap();
+  assert_eq!(resp.status(), 200);
+  let body: serde_json::Value = resp.json().await.unwrap();
+  assert_eq!(body["status"], "healthy");
+}
+
+#[tokio::test]
+async fn metrics_contain_server_gauges() {
+  let server = TestServer::start().await;
+  let base = format!("http://{}", server.addr);
+  let client = reqwest::Client::new();
+
+  // Connect a worker and enqueue an item to populate metrics.
+  let sse_resp = client
+    .post(format!("{base}/api/work/connect"))
+    .json(&WorkerConnect {
+      worker_id: "metrics-worker".into(),
+      capabilities: WorkerCapabilities::default(),
+      concurrency: None,
+    })
+    .send()
+    .await
+    .unwrap();
+  let mut sse_stream = sse_resp.bytes_stream().eventsource();
+
+  let intake_handle = {
+    let client = client.clone();
+    let base = base.clone();
+    tokio::spawn(async move {
+      client
+        .post(format!("{base}/test"))
+        .json(&json!({ "data": "metrics test" }))
+        .send()
+        .await
+        .unwrap()
+    })
+  };
+
+  let event = next_sse_work_event(&mut sse_stream).await;
+  let item: QueueItem = serde_json::from_str(&event.data).unwrap();
+
+  // Complete the item.
+  client
+    .post(format!("{base}/api/work/result"))
+    .json(&WorkResult {
+      item_id: item.id,
+      worker_id: "metrics-worker".into(),
+      response: json!({ "ok": true }),
+    })
+    .send()
+    .await
+    .unwrap();
+
+  intake_handle.await.unwrap();
+
+  let resp = reqwest::get(format!("{base}/metrics")).await.unwrap();
+  assert_eq!(resp.status(), 200);
+  let body = resp.text().await.unwrap();
+  assert!(
+    body.contains("gq_server_queue_depth"),
+    "metrics should contain gq_server_queue_depth"
+  );
+  assert!(
+    body.contains("gq_server_items_enqueued_total"),
+    "metrics should contain gq_server_items_enqueued_total"
+  );
+  assert!(
+    body.contains("gq_server_items_completed_total"),
+    "metrics should contain gq_server_items_completed_total"
+  );
+  assert!(
+    body.contains("gq_server_workers_connected"),
+    "metrics should contain gq_server_workers_connected"
+  );
 }

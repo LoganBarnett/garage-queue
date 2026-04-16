@@ -6,12 +6,17 @@ use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 use garage_queue_lib::protocol::{WorkResult, WorkerConnect};
 use garage_queue_worker::control::{
-  self, status_channel, ControlError, WorkerStatus,
+  self, status_channel, ControlError, ControlState, WorkerStatus,
 };
 use garage_queue_worker::delegator::HttpDelegator;
+use garage_queue_worker::health::ServerConnectivityCheck;
+use garage_queue_worker::metrics::WorkerMetrics;
+use prometheus::Registry;
 use rust_template_foundation::logging::init_server_logging;
+use rust_template_foundation::server::health::HealthRegistry;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
@@ -41,16 +46,34 @@ async fn main() -> Result<(), ApplicationError> {
     DelegatorConfig::Http { url } => HttpDelegator::new(url),
   };
 
+  // Metrics and health infrastructure.
+  let connected = Arc::new(AtomicBool::new(false));
+  let metrics_registry = Arc::new(Registry::new());
+  let metrics = WorkerMetrics::register(&metrics_registry);
+  metrics
+    .capacity_total
+    .set(config.concurrency.default as i64);
+
+  let health_registry = HealthRegistry::default();
+  health_registry
+    .register("server", ServerConnectivityCheck::new(Arc::clone(&connected)))
+    .await;
+
+  let control_state = ControlState {
+    status_tx: Arc::clone(&status_tx),
+    health_registry,
+    metrics_registry,
+  };
+
   let control_bind = config.control_bind;
-  let control_tx = Arc::clone(&status_tx);
   tokio::spawn(async move {
-    if let Err(e) = control::serve(control_bind, control_tx).await {
+    if let Err(e) = control::serve(control_bind, control_state).await {
       error!(error = %e, "Control server failed");
       std::process::exit(1);
     }
   });
 
-  run_sse_loop(config, delegator, status_rx).await;
+  run_sse_loop(config, delegator, status_rx, connected, metrics).await;
 
   info!("Shutdown complete");
   Ok(())
@@ -60,6 +83,8 @@ async fn run_sse_loop(
   config: Config,
   delegator: HttpDelegator,
   mut status: control::StatusReceiver,
+  connected: Arc<AtomicBool>,
+  metrics: WorkerMetrics,
 ) {
   let client = reqwest::Client::new();
   let connect_url = format!("{}/api/work/connect", config.server_url);
@@ -106,16 +131,19 @@ async fn run_sse_loop(
           status = %r.status(),
           "SSE connect rejected, retrying"
         );
+        connected.store(false, Ordering::Relaxed);
         tokio::time::sleep(reconnect_interval).await;
         continue;
       }
       Err(e) => {
         warn!(error = %e, "SSE connect failed, retrying");
+        connected.store(false, Ordering::Relaxed);
         tokio::time::sleep(reconnect_interval).await;
         continue;
       }
     };
 
+    connected.store(true, Ordering::Relaxed);
     info!("SSE connection established");
 
     let mut stream = response.bytes_stream().eventsource();
@@ -173,14 +201,19 @@ async fn run_sse_loop(
 
           info!(item_id = %item.id, queue = %item.queue, "Received item");
 
+          metrics.items_processing.inc();
+
           // Spawn concurrent processing task.
           let delegator = Arc::clone(&delegator);
           let client = client.clone();
           let result_url = result_url.clone();
           let worker_id = config.worker_id.clone();
+          let metrics = metrics.clone();
 
           join_set.spawn(async move {
             info!(item_id = %item.id, "Processing item");
+
+            let start = Instant::now();
 
             match delegator
               .delegate(
@@ -205,6 +238,8 @@ async fn run_sse_loop(
                     "Failed to submit result"
                   );
                 }
+                metrics.items_processed_total.inc();
+                metrics.item_duration_seconds.observe(start.elapsed().as_secs_f64());
                 info!(item_id = %item.id, "Item complete");
               }
               Err(e) => {
@@ -215,6 +250,7 @@ async fn run_sse_loop(
                 );
               }
             }
+            metrics.items_processing.dec();
           });
         }
         _ = status.changed() => {
@@ -247,6 +283,8 @@ async fn run_sse_loop(
         }
       }
     }
+
+    connected.store(false, Ordering::Relaxed);
 
     // Reconnect after stream ends.  Wait for in-flight items first.
     if !join_set.is_empty() {
